@@ -128,6 +128,26 @@ def test_backtest_predicts_before_learning_result() -> None:
     assert "season_20242025_log_loss" in metrics
 
 
+def test_backtest_can_train_on_unscored_warmup_seasons() -> None:
+    games = [
+        {
+            "game_id": i,
+            "season": 20232024 if i < 3 else 20242025,
+            "start_time_utc": f"2024-01-0{i}T00:00:00Z",
+            "game_date": f"2024-01-0{i}",
+            "home_team": "A",
+            "away_team": "B",
+            "home_score": 3,
+            "away_score": 1,
+        }
+        for i in range(1, 4)
+    ]
+    predictions, metrics = backtest(games, evaluation_start_season=20242025)
+    assert len(predictions) == metrics["games"] == 1
+    assert predictions[0]["home_win_probability"] > 0.5
+    assert "season_20232024_log_loss" not in metrics
+
+
 def test_mp_cleaner_is_positive_definite_and_detects_signal() -> None:
     rng = np.random.default_rng(7)
     common = rng.normal(size=(500, 1))

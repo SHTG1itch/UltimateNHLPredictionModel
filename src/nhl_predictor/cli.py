@@ -49,6 +49,7 @@ def main() -> None:
     evaluate = commands.add_parser("backtest", help="run chronological pre-game predictions")
     evaluate.add_argument("--input", default="data/games.csv")
     evaluate.add_argument("--output", default="artifacts/predictions.csv")
+    evaluate.add_argument("--evaluate-from", type=int, help="score this season and later")
 
     predict = commands.add_parser("predict", help="forecast one future NHL date")
     predict.add_argument("--date", required=True, help="date in YYYY-MM-DD format")
@@ -69,7 +70,10 @@ def main() -> None:
             )
         )
     elif arguments.command == "backtest":
-        predictions, metrics = backtest(read_games(arguments.input))
+        predictions, metrics = backtest(
+            read_games(arguments.input),
+            evaluation_start_season=arguments.evaluate_from,
+        )
         _write_predictions(predictions, arguments.output)
         print(json.dumps(metrics, indent=2, sort_keys=True))
     else:

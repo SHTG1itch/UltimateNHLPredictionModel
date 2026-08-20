@@ -504,6 +504,7 @@ class BayesianModelAverage:
 def backtest(
     games: list[dict],
     *,
+    evaluation_start_season: int | None = None,
     model_average: bool = True,
     **model_options: float,
 ) -> tuple[list[dict], dict[str, float]]:
@@ -545,25 +546,26 @@ def backtest(
             + 10.0
             ** ((elo[away] - elo[home] - 35.0) / 400.0)
         )
-        clipped = min(max(probability, 1e-12), 1.0 - 1e-12)
-        losses.append(-(outcome * log(clipped) + (1 - outcome) * log(1 - clipped)))
-        home_rate_losses.append(
-            -(outcome * log(home_rate_probability) + (1 - outcome) * log(1 - home_rate_probability))
-        )
-        elo_losses.append(
-            -(outcome * log(elo_probability) + (1 - outcome) * log(1 - elo_probability))
-        )
-        correct += int((probability >= 0.5) == bool(outcome))
-        predictions.append(
-            {
-                **row,
-                **details,
-                "home_rate_probability": home_rate_probability,
-                "elo_probability": elo_probability,
-                "home_win": outcome,
-                "log_loss": losses[-1],
-            }
-        )
+        if evaluation_start_season is None or current_season >= evaluation_start_season:
+            clipped = min(max(probability, 1e-12), 1.0 - 1e-12)
+            losses.append(-(outcome * log(clipped) + (1 - outcome) * log(1 - clipped)))
+            home_rate_losses.append(
+                -(outcome * log(home_rate_probability) + (1 - outcome) * log(1 - home_rate_probability))
+            )
+            elo_losses.append(
+                -(outcome * log(elo_probability) + (1 - outcome) * log(1 - elo_probability))
+            )
+            correct += int((probability >= 0.5) == bool(outcome))
+            predictions.append(
+                {
+                    **row,
+                    **details,
+                    "home_rate_probability": home_rate_probability,
+                    "elo_probability": elo_probability,
+                    "home_win": outcome,
+                    "log_loss": losses[-1],
+                }
+            )
         # The result becomes available only after its prediction is recorded.
         model.update(home, away, played_on, bool(outcome), row)
         home_wins += outcome
@@ -572,11 +574,13 @@ def backtest(
         elo[home] += elo_change
         elo[away] -= elo_change
 
+    if not predictions:
+        raise ValueError("evaluation start season excludes every game")
     probabilities = np.array([row["home_win_probability"] for row in predictions])
     outcomes = np.array([row["home_win"] for row in predictions])
     metrics = {
-        "games": float(len(games)),
-        "accuracy": correct / len(games),
+        "games": float(len(predictions)),
+        "accuracy": correct / len(predictions),
         "log_loss": float(np.mean(losses)),
         "brier_score": float(np.mean((probabilities - outcomes) ** 2)),
         "home_rate_log_loss": float(np.mean(home_rate_losses)),
