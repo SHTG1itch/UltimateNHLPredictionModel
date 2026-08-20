@@ -38,6 +38,11 @@ predictions integrate uncertainty with MacKay's logistic-Gaussian approximation
 their previous value between seasons, while covariance increases to represent
 roster turnover.
 
+Overtime and shootout results use a 0.70 power likelihood: both still count as
+wins for the moneyline target, but their score curvature and residual update
+are multiplied by 0.70 because they are near-ties. The weight was selected on
+the validation seasons and reduces posterior overreaction.
+
 ## Walk-forward protocol
 
 Evaluation follows the information order of a live prediction:
@@ -134,12 +139,12 @@ through 2025-26 produced:
 
 ```json
 {
-  "accuracy": 0.5938795938795939,
-  "brier_score": 0.2360217323753095,
+  "accuracy": 0.5945945945945946,
+  "brier_score": 0.2359000529347083,
   "elo_log_loss": 0.6754472619256587,
   "games": 6993.0,
   "home_rate_log_loss": 0.6908971193256509,
-  "log_loss": 0.664549171637148
+  "log_loss": 0.6642990021795636
 }
 ```
 
@@ -147,11 +152,11 @@ Season-level results expose drift hidden by the aggregate:
 
 | Season role | Games | Model log loss | Elo log loss | Brier | Accuracy |
 |---|---:|---:|---:|---:|---:|
-| 2021-22 warm-up | 1,401 | 0.66194 | 0.65977 | 0.23418 | 61.74% |
-| 2022-23 validation | 1,400 | 0.66198 | 0.66988 | 0.23480 | 60.21% |
-| 2023-24 validation | 1,400 | 0.65441 | 0.67198 | 0.23133 | 61.14% |
-| 2024-25 parameter holdout | 1,398 | 0.66117 | 0.67660 | 0.23467 | 59.01% |
-| 2025-26 prospective check | 1,394 | 0.68332 | 0.69912 | 0.24516 | 54.81% |
+| 2021-22 warm-up | 1,401 | 0.66125 | 0.65977 | 0.23381 | 61.81% |
+| 2022-23 validation | 1,400 | 0.66196 | 0.66988 | 0.23472 | 60.64% |
+| 2023-24 validation | 1,400 | 0.65393 | 0.67198 | 0.23114 | 60.64% |
+| 2024-25 parameter holdout | 1,398 | 0.66106 | 0.67660 | 0.23466 | 58.87% |
+| 2025-26 prospective check | 1,394 | 0.68338 | 0.69912 | 0.24521 | 55.31% |
 
 The defaults minimize mean log loss across the 2022-23 and 2023-24 validation
 seasons. The explored grid covered team prior variance 0.5-3.0, context variance
@@ -165,6 +170,10 @@ residuals. The retained six-feature set improved validation mean log loss from
 0.658493 to 0.658196. It also improves the five-season aggregate modestly; raw
 goal share and actual shooting/save percentages were removed as redundant,
 noisier versions of the xG decomposition.
+
+An overtime power-likelihood grid (0.40, 0.55, 0.70, 0.85, 1.00) selected 0.70,
+improving validation mean log loss from 0.658196 to 0.657943. The later 2024-25
+check also improved; 2025-26 was essentially flat and slightly worse.
 
 The model beats Elo on probability quality in every post-warm-up season, but
 2024-25 winner accuracy is slightly lower than Elo. Log loss remains the model

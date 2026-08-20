@@ -29,6 +29,15 @@ def test_repeated_wins_raise_probability() -> None:
     assert before < after < 1.0
 
 
+def test_overtime_result_has_smaller_posterior_update() -> None:
+    regulation = BayesianPlackettLuce(["A", "B"])
+    overtime = BayesianPlackettLuce(["A", "B"])
+    played_on = date(2025, 1, 1)
+    regulation.update("A", "B", played_on, True, {"overtime": 0})
+    overtime.update("A", "B", played_on, True, {"overtime": 1})
+    assert regulation.mean[regulation.index["A"]] > overtime.mean[overtime.index["A"]]
+
+
 def test_backtest_predicts_before_learning_result() -> None:
     games = [
         {

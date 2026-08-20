@@ -66,6 +66,7 @@ class BayesianPlackettLuce:
         offseason_retention: float = 0.60,
         offseason_variance: float = 0.025,
         form_features: tuple[str, ...] = DEFAULT_FORM_FEATURES,
+        overtime_weight: float = 0.70,
     ) -> None:
         unique_teams = sorted(set(teams))
         if len(unique_teams) < 2:
@@ -79,6 +80,8 @@ class BayesianPlackettLuce:
             raise ValueError("all variances must be positive")
         if not 0.0 < form_decay < 1.0 or not 0.0 <= offseason_retention <= 1.0:
             raise ValueError("decay and retention must be probabilities")
+        if not 0.0 < overtime_weight <= 1.0:
+            raise ValueError("overtime_weight must be in (0, 1]")
         if not form_features or len(set(form_features)) != len(form_features):
             raise ValueError("form_features must contain unique feature names")
         unknown_features = set(form_features) - set(FORM_FEATURES)
@@ -105,6 +108,7 @@ class BayesianPlackettLuce:
         self.form_decay = form_decay
         self.offseason_retention = offseason_retention
         self.offseason_variance = offseason_variance
+        self.overtime_weight = overtime_weight
         # Columns hold GF, GA, SF, SA, PP goals/opportunities, PP goals allowed,
         # times shorthanded, shot attempts for/against, xGF/xGA, and goals
         # for/against in xG-covered games. They are decayed sufficient stats.
@@ -301,14 +305,19 @@ class BayesianPlackettLuce:
         probability = _sigmoid(float(features @ self.mean))
         residual = float(home_win) - probability
         projected = self.covariance @ features
-        curvature = max(probability * (1.0 - probability), 1e-9)
+        # An OT/SO game is a near-tie ranking, so a fractional power likelihood
+        # can keep it from moving strength as much as a regulation result.
+        observation_weight = (
+            self.overtime_weight if game is not None and game.get("overtime") else 1.0
+        )
+        curvature = max(observation_weight * probability * (1.0 - probability), 1e-9)
 
         # Sherman-Morrison applies the rank-one Hessian update without a costly
         # matrix inverse on every game.
         denominator = 1.0 + curvature * float(features @ projected)
         self.covariance -= curvature * np.outer(projected, projected) / denominator
         self.covariance = (self.covariance + self.covariance.T) / 2
-        self.mean += (self.covariance @ features) * residual
+        self.mean += (self.covariance @ features) * residual * observation_weight
 
         # Only strength differences are identifiable, so recentering removes
         # harmless numerical drift without changing any game probability.
