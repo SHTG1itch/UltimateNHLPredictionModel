@@ -405,18 +405,13 @@ class BayesianPlackettLuce:
 
 
 class BayesianModelAverage:
-    """Online Bayesian average of two validation-selected PL specifications."""
+    """Validation-weighted average of two Bayesian PL specifications."""
 
     def __init__(
         self,
         teams: Iterable[str],
-        *,
-        forgetting: float = 0.20,
-        likelihood_power: float = 0.10,
         **model_options: float,
     ) -> None:
-        if not 0.0 < forgetting <= 1.0 or not 0.0 < likelihood_power <= 1.0:
-            raise ValueError("BMA forgetting and likelihood power must be in (0, 1]")
         teams = tuple(teams)
         specifications = (
             {
@@ -436,11 +431,7 @@ class BayesianModelAverage:
             BayesianPlackettLuce(teams, **(specification | model_options))
             for specification in specifications
         ]
-        self.log_prior = np.log([0.54, 0.46])
-        self.log_weights = self.log_prior.copy()
-        self.forgetting = forgetting
-        self.likelihood_power = likelihood_power
-        self._pending: tuple[str, str, date, NDArray[np.float64]] | None = None
+        self.log_weights = np.log([0.54, 0.46])
 
     @property
     def spectral_diagnostics(self) -> SpectralDiagnostics | None:
@@ -459,7 +450,6 @@ class BayesianModelAverage:
 
         for member in self.members:
             member.start_new_season()
-        self._pending = None
 
     def predict_details(self, home: str, away: str, played_on: date) -> dict[str, float]:
         """Average predictive distributions using pre-game model weights."""
@@ -481,7 +471,6 @@ class BayesianModelAverage:
         margin_sd = sqrt(max(float(
             weights @ (margin_variances + margin_means**2) - margin_mean**2
         ), 0.0))
-        self._pending = (home, away, played_on, probabilities)
         result = {
             "home_win_probability": float(weights @ probabilities),
             "latent_margin_mean": margin_mean,
@@ -512,22 +501,10 @@ class BayesianModelAverage:
         home_win: bool,
         game: dict | None = None,
     ) -> None:
-        """Update model probabilities from the held-out result, then each member."""
+        """Update both member posteriors after the held-out result."""
 
-        if self._pending is None or self._pending[:3] != (home, away, played_on):
-            self.predict_details(home, away, played_on)
-        assert self._pending is not None
-        probabilities = self._pending[3]
-        likelihoods = probabilities if home_win else 1.0 - probabilities
-        self.log_weights = (
-            self.log_prior
-            + self.forgetting * (self.log_weights - self.log_prior)
-            + self.likelihood_power * np.log(np.clip(likelihoods, 1e-12, 1.0))
-        )
-        self.log_weights -= np.logaddexp.reduce(self.log_weights)
         for member in self.members:
             member.update(home, away, played_on, home_win, game)
-        self._pending = None
 
 
 def backtest(

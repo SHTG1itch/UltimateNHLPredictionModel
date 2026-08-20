@@ -87,7 +87,7 @@ def test_positive_part_james_stein_shrinks_team_signal() -> None:
     assert shrunk_details["home_win_probability"] < raw_details["home_win_probability"]
 
 
-def test_bayesian_model_weights_learn_from_validation_prior_after_result() -> None:
+def test_model_average_uses_fixed_validation_weights() -> None:
     model = BayesianModelAverage(["A", "B", "C", "D"])
     played_on = date(2025, 1, 1)
     for member, direction in zip(model.members, (1.0, -1.0), strict=True):
@@ -98,7 +98,7 @@ def test_bayesian_model_weights_learn_from_validation_prior_after_result() -> No
     assert details["possession_weight"] == 0.54
     assert details["fast_james_stein_weight"] == 0.46
     model.update("A", "B", played_on, True)
-    assert model.weights[0] > 0.54
+    assert np.allclose(model.weights, [0.54, 0.46])
 
 
 def test_backtest_predicts_before_learning_result() -> None:
