@@ -404,8 +404,8 @@ class BayesianModelAverage:
         self,
         teams: Iterable[str],
         *,
-        forgetting: float = 0.50,
-        likelihood_power: float = 1.0,
+        forgetting: float = 0.20,
+        likelihood_power: float = 0.10,
         **model_options: float,
     ) -> None:
         if not 0.0 < forgetting <= 1.0 or not 0.0 < likelihood_power <= 1.0:
