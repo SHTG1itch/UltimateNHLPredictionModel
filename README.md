@@ -88,14 +88,15 @@ retained automatically.
 
 The downloader gathers completed regular-season and playoff games from the NHL
 web schedule API. It then fetches league-wide per-game `summary`, `powerplay`,
-`penaltykill`, and `realtime` reports from the NHL Stats API. Reports are joined
-by official game ID and home/road orientation, and incomplete joins fail loudly.
+`penaltykill`, `realtime`, and goalie reports from the NHL Stats API. Reports are
+joined by official game ID and home/road orientation; incomplete joins fail.
 
 The compact CSV contains scores, shots, shot attempts, faceoffs, power-play
 goals/opportunities, penalty-kill goals allowed/times shorthanded, and MoneyPuck
 expected goals. Listed shot ZIPs are aggregated in memory and discarded. Only
 two xG totals and a coverage flag survive per game. See
 [data/README.md](data/README.md) for attribution, terms, schema, and storage.
+Actual starter IDs and workload are retained strictly as post-game history.
 
 ## Quick start
 
@@ -191,8 +192,10 @@ season's hit rate would not improve the probability forecast.
   A time-zone travel feature was researched but rejected: it worsened validation
   mean log loss from 0.658196 to 0.658442, and a strongly shrunk travel prior did
   not beat exclusion. A future candidate needs actual distance and circadian
-  direction. Starting goalies, injuries,
-  confirmed lineups, and market odds are not yet present. They require
+  direction. A prior-start goalie mixture was also rejected: validation log
+  loss worsened from 0.657943 to 0.658201, while a strongly shrunk goalie prior
+  only approached exclusion (0.657946). Actual starter history is collected,
+  but confirmed pregame starters, injuries, lineups, and market odds require
   timestamped historical snapshots;
   final rosters or later revisions leak.
 - "Most accurate" remains a benchmark target. Every model change must beat
