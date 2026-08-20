@@ -179,8 +179,12 @@ season's hit rate would not improve the probability forecast.
 - Hyperparameters are fixed defaults in `BayesianPlackettLuce`; the benchmark
   command requires no hidden notebook or private configuration.
 - Current rolling features include xG, shots, SAT, rest, and special teams.
-  Starting goalies, injuries, travel distance, confirmed lineups, and market
-  odds are not yet present. They require timestamped historical snapshots;
+  A time-zone travel feature was researched but rejected: it worsened validation
+  mean log loss from 0.658196 to 0.658442, and a strongly shrunk travel prior did
+  not beat exclusion. A future candidate needs actual distance and circadian
+  direction. Starting goalies, injuries,
+  confirmed lineups, and market odds are not yet present. They require
+  timestamped historical snapshots;
   final rosters or later revisions leak.
 - "Most accurate" remains a benchmark target. Every model change must beat
   fixed baselines on later seasons rather than only fitting historical games.
@@ -203,5 +207,8 @@ season's hit rate would not improve the probability forecast.
   evaluation motivate the rolling shot/finishing/save decomposition.
 - [MoneyPuck Download Data](https://moneypuck.com/data.htm): published shot
   probabilities used under its attributed non-commercial data terms.
+- [Charest et al. (2022), *Associations between time zone changes, travel
+  distance and performance*](https://doi.org/10.1016/j.jsams.2022.10.005):
+  motivates the audited travel candidate and its acclimation assumption.
 - Forward validation preserves temporal order; this implementation enforces it
   by writing each forecast before updating any posterior or form statistic.
