@@ -60,7 +60,7 @@ class BayesianPlackettLuce:
         *,
         team_prior_variance: float = 0.20,
         context_prior_variance: float = 1.0,
-        daily_process_variance: float = 0.00001,
+        daily_process_variance: float = 0.0000001,
         covariance_window_weeks: int = 104,
         form_decay: float = 0.96,
         offseason_retention: float = 0.60,
