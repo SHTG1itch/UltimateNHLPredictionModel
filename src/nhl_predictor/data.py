@@ -6,10 +6,13 @@ import csv
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
+from io import BytesIO, TextIOWrapper
+from math import isfinite
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from zipfile import ZipFile
 
 # Current and relocated/defunct clubs cover the modern seasons useful for
 # training. Bad team/season combinations return 404 and are safely skipped.
@@ -22,6 +25,7 @@ TEAM_CODES = (
 API = "https://api-web.nhle.com/v1/club-schedule-season/{team}/{season}"
 STATS_API = "https://api.nhle.com/stats/rest/en/team/{report}"
 SCHEDULE_API = "https://api-web.nhle.com/v1/schedule/{date}"
+MONEYPUCK_XG_API = "https://peter-tanner.com/moneypuck/downloads/shots_{year}.zip"
 # Each report is league-wide and game-grained, avoiding one API request per
 # boxscore. Values are post-game observations and enter features only after the
 # corresponding prediction has been recorded.
@@ -50,10 +54,12 @@ TEAM_STAT_FIELDS = tuple(
         "pk_goals_against", "times_shorthanded", "shot_attempts",
     )
 )
+XG_FIELDS = ("home_xg", "away_xg")
 FIELDS = (
     "game_id", "season", "game_type", "game_date", "start_time_utc",
     "home_team", "away_team", "home_score", "away_score", "overtime",
     *TEAM_STAT_FIELDS,
+    *XG_FIELDS,
 )
 
 
@@ -128,6 +134,52 @@ def fetch_schedule(target_date: str, *, timeout: float = 30.0) -> list[dict]:
         return _parse_schedule(json.load(response), target_date)
 
 
+def _aggregate_xg(rows: object) -> dict[tuple[int, str], float]:
+    """Collapse MoneyPuck shots into expected goals by game and team side."""
+
+    totals: dict[tuple[int, str], float] = {}
+    for row in rows:
+        xg = float(row["xGoal"])
+        if not isfinite(xg) or not 0.0 <= xg <= 1.0:
+            raise ValueError("MoneyPuck xGoal must be a finite probability")
+        # MoneyPuck stores the start year plus a six-digit NHL game suffix.
+        game_id = int(f"{int(row['season'])}{int(float(row['game_id'])):06d}")
+        orientation = "H" if float(row["isHomeTeam"]) == 1.0 else "R"
+        key = (game_id, orientation)
+        totals[key] = totals.get(key, 0.0) + xg
+    return totals
+
+
+def _fetch_xg(season: int, timeout: float) -> dict[tuple[int, str], float]:
+    """Stream one listed MoneyPuck season ZIP into compact game-level totals."""
+
+    year = int(str(season)[:4])
+    request = Request(
+        MONEYPUCK_XG_API.format(year=year),
+        headers={"User-Agent": "Mozilla/5.0 UltimateNHLPredictionModel/0.3"},
+    )
+    with urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed HTTPS host
+        # A hard cap prevents a changed endpoint from exhausting memory. Listed
+        # season archives are currently about 20 MB compressed.
+        compressed = response.read(100_000_001)
+    if len(compressed) > 100_000_000:
+        raise ValueError(f"MoneyPuck season {year} exceeded the 100 MB safety cap")
+
+    with ZipFile(BytesIO(compressed)) as archive:
+        expected_name = f"shots_{year}.csv"
+        if (
+            archive.namelist() != [expected_name]
+            or archive.getinfo(expected_name).file_size > 1_000_000_000
+        ):
+            raise ValueError(f"unexpected MoneyPuck archive structure for season {year}")
+        with archive.open(expected_name) as raw:
+            reader = csv.DictReader(TextIOWrapper(raw, encoding="utf-8-sig", newline=""))
+            required = {"season", "game_id", "isHomeTeam", "xGoal"}
+            if not required <= set(reader.fieldnames or ()):
+                raise ValueError(f"MoneyPuck season {year} is missing required columns")
+            return _aggregate_xg(reader)
+
+
 def download_seasons(
     seasons: list[int],
     output: str | Path,
@@ -153,6 +205,12 @@ def download_seasons(
             for game in future.result():
                 if game.get("gameState") in {"FINAL", "OFF"}:
                     games[int(game["id"])] = game
+
+    # MoneyPuck publishes these exact season archives for non-commercial use.
+    # Only two game-level sums survive; raw shot ZIPs are never written to disk.
+    expected_goals: dict[tuple[int, str], float] = {}
+    for season in seasons:
+        expected_goals.update(_fetch_xg(season, timeout))
 
     # Merge report columns by official game ID and H/R orientation. Every game
     # must have exactly one home and one road team in each requested report.
@@ -196,6 +254,10 @@ def download_seasons(
             }:
                 raise ValueError(f"incomplete NHL Stats reports for game {row['game_id']} ({side})")
             row.update({f"{side}_{field}": value for field, value in game_stats.items()})
+            xg = expected_goals.get((row["game_id"], orientation))
+            if xg is None:
+                raise ValueError(f"missing MoneyPuck expected goals for game {row['game_id']} ({side})")
+            row[f"{side}_xg"] = xg
         rows.append(row)
 
     destination = Path(output)
@@ -218,6 +280,6 @@ def read_games(path: str | Path) -> list[dict]:
     for row in rows:
         for field in ("game_id", "season", "game_type", "home_score", "away_score", "overtime"):
             row[field] = int(row[field])
-        for field in TEAM_STAT_FIELDS:
+        for field in (*TEAM_STAT_FIELDS, *XG_FIELDS):
             row[field] = float(row[field])
     return sorted(rows, key=lambda row: (row["start_time_utc"], row["game_id"]))

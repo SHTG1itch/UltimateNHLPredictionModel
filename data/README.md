@@ -14,7 +14,8 @@ nhl-predict download --seasons 20212022 20222023 20232024 20242025 20252026
 The downloader requests team schedules concurrently, deduplicates by official
 game ID, removes preseason games, and sorts by official UTC start time. It also
 downloads four league-wide per-game NHL Stats reports and joins them by game ID
-plus home/road orientation. It never imputes results or incomplete report rows.
+plus home/road orientation. It also aggregates MoneyPuck's listed shot archives
+to team-game expected-goal sums. It never imputes incomplete report rows.
 
 These team statistics are post-game facts. The walk-forward model updates form
 with them only after forecasting that game, which prevents target leakage.
@@ -23,16 +24,26 @@ with them only after forecasting that game, which prevents target leakage.
 
 Identity/time columns are `game_id`, `season`, `game_type`, `game_date`, and
 `start_time_utc`. Outcome columns are the home/away abbreviations and final
-scores plus an overtime indicator. Each team then has seven post-game fields:
+scores plus an overtime indicator. Each team then has eight post-game fields:
 
 - `shots` and `shot_attempts` measure on-target volume and broader possession.
 - `faceoff_pct` is retained for later audited feature experiments.
 - `pp_goals` and `pp_opportunities` are power-play scoring sufficient stats.
 - `pk_goals_against` and `times_shorthanded` are penalty-kill sufficient stats.
+- `xg` is the sum of MoneyPuck pre-shot goal probabilities for that team/game.
 
 `read_games()` converts IDs, scores, and flags to integers and every team stat
 to floating point. Missing columns raise `ValueError`; malformed or partial API
 data is never silently filled.
+
+## MoneyPuck attribution and terms
+
+Expected goals come from [MoneyPuck.com](https://moneypuck.com/data.htm). Its
+download page permits the listed files for non-commercial use and journalism
+with attribution; other uses require permission from MoneyPuck. The downloader
+uses only the explicitly listed season ZIPs, validates their structure, streams
+them in memory, and retains only `home_xg` and `away_xg` totals. It does not
+scrape unlisted pages or save redistributed raw shot data.
 
 ## Storage policy
 

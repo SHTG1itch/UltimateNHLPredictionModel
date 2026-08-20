@@ -5,7 +5,14 @@ from datetime import date, timedelta
 
 import numpy as np
 
-from nhl_predictor.data import FIELDS, TEAM_STAT_FIELDS, _parse_schedule, read_games
+from nhl_predictor.data import (
+    FIELDS,
+    TEAM_STAT_FIELDS,
+    XG_FIELDS,
+    _aggregate_xg,
+    _parse_schedule,
+    read_games,
+)
 from nhl_predictor.model import BayesianPlackettLuce, backtest, forecast
 from nhl_predictor.random_matrix import clean_covariance
 
@@ -76,7 +83,19 @@ def test_enriched_game_csv_is_typed(tmp_path) -> None:
 
     parsed = read_games(path)[0]
     assert isinstance(parsed["game_id"], int)
-    assert all(isinstance(parsed[field], float) for field in TEAM_STAT_FIELDS)
+    assert all(isinstance(parsed[field], float) for field in (*TEAM_STAT_FIELDS, *XG_FIELDS))
+
+
+def test_shots_are_compacted_to_game_team_expected_goals() -> None:
+    rows = [
+        {"season": "2024", "game_id": "20001", "isHomeTeam": "1.0", "xGoal": "0.2"},
+        {"season": "2024", "game_id": "20001", "isHomeTeam": "1.0", "xGoal": "0.3"},
+        {"season": "2024", "game_id": "20001", "isHomeTeam": "0.0", "xGoal": "0.1"},
+    ]
+    assert _aggregate_xg(rows) == {
+        (2024020001, "H"): 0.5,
+        (2024020001, "R"): 0.1,
+    }
 
 
 def test_current_boxscore_enters_form_only_after_update() -> None:
