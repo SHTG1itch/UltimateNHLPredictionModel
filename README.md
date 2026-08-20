@@ -1,7 +1,8 @@
 # Ultimate NHL Prediction Model
 
-A reproducible Python model for pre-game NHL win probabilities. It combines a
-sequential Bayesian Plackett-Luce likelihood, strict walk-forward evaluation,
+A reproducible Python model for pre-game NHL win probabilities. It combines
+sequential Bayesian Plackett-Luce likelihoods with dynamic Bayesian model
+averaging, positive-part James-Stein shrinkage, strict walk-forward evaluation,
 and random-matrix covariance cleaning. "Most accurate" is treated as a measured
 benchmark outcome, not something guaranteed by naming sophisticated methods.
 
@@ -38,16 +39,68 @@ predictions integrate uncertainty with MacKay's logistic-Gaussian approximation
 their previous value between seasons, while covariance increases to represent
 roster turnover.
 
+### James-Stein shrinkage and Bayesian model averaging
+
+The CLI averages two complementary specifications rather than assuming that one
+feature horizon is certainly correct:
+
+1. `possession` uses xG share, shot share, and SAT share with the original form
+   decay.
+2. `fast_james_stein` uses the full six-feature context, faster 0.92 form decay,
+   tempered James-Stein team effects, and conservative score-margin evidence.
+
+For the second member, let \(p\) be the number of teams, \(\mathbf{s}\) their
+posterior means, and
+\(\bar v=\operatorname{tr}(\mathbf{C}_{s})/p\) their pooled posterior variance.
+The positive-part estimator used at prediction time is
+
+\[
+\kappa = \max\!\left(0, 1-
+\rho\frac{(p-2)\bar v}{\sum_i(s_i-\bar s)^2}\right), \qquad
+\tilde s_i=\bar s+\kappa(s_i-\bar s),
+\]
+
+with \(\rho=0.05\). The theorem's \(p\ge3\) boundary is enforced, and
+\(\rho=0\) is the exact no-shrinkage ablation. Shrinkage changes forecasts but
+does not destructively overwrite the learned posterior. The classical
+\(\rho=1\) coefficient was far too strong for correlated, evolving NHL ratings;
+it remains an audited rejection rather than being retained for its name.
+
+Let \(p_{k,t}\) be member \(k\)'s pre-game probability and \(\pi_{k,t}\) its
+weight. The reported forecast is
+
+\[
+\hat p_t=\sum_k\pi_{k,t}p_{k,t}, \qquad
+\pi_{k,t+1}\propto
+\pi_{k,t}^{\alpha}
+\left[p_{k,t}^{y_t}(1-p_{k,t})^{1-y_t}\right]^{\eta},
+\]
+
+where forgetting \(\alpha=0.95\) prevents obsolete seasons from permanently
+locking a member out and fractional likelihood power \(\eta=0.05\) prevents two
+highly correlated models from producing unjustifiably extreme weights. Each
+ledger row records both member probabilities and their pre-result weights.
+The binary outcome updates the weights only after that row is recorded.
+
 Every ledger row also reports the latent log-odds margin mean and standard
 deviation. The 95% epistemic bounds are
 \(\sigma(\mu-1.96\sigma_m)\) and \(\sigma(\mu+1.96\sigma_m)\). These describe
 parameter uncertainty in the underlying win propensity, not a confidence
 interval for the binary outcome of one inherently random game.
 
-Overtime and shootout results use a 0.70 power likelihood: both still count as
-wins for the moneyline target, but their score curvature and residual update
-are multiplied by 0.70 because they are near-ties. The weight was selected on
-the validation seasons and reduces posterior overreaction.
+Overtime and shootout results use a 0.70 power likelihood because they are
+near-ties. In the fast James-Stein member, the rating target is also softened to
+0.90 for the winner and 0.10 for the loser, a conservative Davidson-inspired
+tie treatment; the moneyline evaluation target remains the actual winner. That
+member's regulation evidence is multiplied by
+
+\[
+1 + 0.20\log(\max(|G_h-G_a|,1)),
+\]
+
+so a blowout carries somewhat more rating information without growing linearly
+with score margin. The possession member omits this term, allowing model
+averaging to protect forecasts when margin is misleading.
 
 ## Walk-forward protocol
 
@@ -55,7 +108,8 @@ Evaluation follows the information order of a live prediction:
 
 1. Sort games by official UTC start time.
 2. Predict game \(t\) using only results and boxscores before \(t\).
-3. Record the probability, baselines, and proper scoring rules.
+3. Record the mixture probability, member probabilities and weights, baselines,
+   and proper scoring rules.
 4. Only then update the posterior and rolling form with game \(t\).
 
 This prevents future leakage. Same-day games use scheduled UTC ordering. Binary
@@ -131,13 +185,13 @@ benchmark can be tied to the data bytes that produced it.
 
 ### Forecast an upcoming date
 
-`nhl-predict predict` fits the posterior to every completed row in
-`data/games.csv`, downloads one exact NHL schedule date, prints home-win
-probabilities, latent margin uncertainty, and 95% epistemic bounds, then writes
-`artifacts/forecast.csv`. It rejects any schedule at or before the latest
-training result, preventing an accidental historical forecast from using future
-games. An unpublished or game-free date returns an empty prediction list
-without creating a misleading artifact.
+`nhl-predict predict` fits both posteriors and sequential model weights to every
+completed row in `data/games.csv`, downloads one exact NHL schedule date, prints home-win
+probabilities, member weights, latent margin uncertainty, and 95% epistemic
+bounds, then writes `artifacts/forecast.csv`. It rejects any schedule at or
+before the latest training result, preventing an accidental historical forecast
+from using future games. An unpublished or game-free date returns an empty
+prediction list without creating a misleading artifact.
 
 The command predicts regular-season and playoff games only. New teams present
 in a future schedule receive the same zero-centered prior as every other unseen
@@ -154,12 +208,14 @@ produced:
 
 ```json
 {
-  "accuracy": 0.5945945945945946,
-  "brier_score": 0.2359000529347083,
+  "accuracy": 0.597025597025597,
+  "brier_score": 0.235413911988443,
   "elo_log_loss": 0.6754472619256587,
+  "final_fast_james_stein_weight": 0.4978780408261035,
+  "final_possession_weight": 0.5021219591738965,
   "games": 6993.0,
   "home_rate_log_loss": 0.6908971193256509,
-  "log_loss": 0.6642990021795636,
+  "log_loss": 0.6632692889626939,
   "mp_noise_eigenvalues": 32.0,
   "mp_signal_eigenvalues": 1.0
 }
@@ -169,11 +225,17 @@ Season-level results expose drift hidden by the aggregate:
 
 | Season role | Games | Model log loss | Elo log loss | Brier | Accuracy |
 |---|---:|---:|---:|---:|---:|
-| 2021-22 warm-up | 1,401 | 0.66125 | 0.65977 | 0.23381 | 61.81% |
-| 2022-23 validation | 1,400 | 0.66196 | 0.66988 | 0.23472 | 60.64% |
-| 2023-24 validation | 1,400 | 0.65393 | 0.67198 | 0.23114 | 60.64% |
-| 2024-25 parameter holdout | 1,398 | 0.66106 | 0.67660 | 0.23466 | 58.87% |
-| 2025-26 prospective check | 1,394 | 0.68338 | 0.69912 | 0.24521 | 55.31% |
+| 2021-22 warm-up | 1,401 | 0.65939 | 0.65977 | 0.23293 | 62.10% |
+| 2022-23 validation | 1,400 | 0.66107 | 0.66988 | 0.23434 | 60.86% |
+| 2023-24 validation | 1,400 | 0.65376 | 0.67198 | 0.23107 | 61.50% |
+| 2024-25 parameter holdout | 1,398 | 0.65963 | 0.67660 | 0.23394 | 59.08% |
+| 2025-26 prospective check | 1,394 | 0.68258 | 0.69912 | 0.24483 | 54.95% |
+
+Every season's log loss improves over the former single-model benchmark. Across
+all games, log loss falls from 0.664299 to 0.663269, Brier score falls from
+0.235900 to 0.235414, and accuracy rises from 59.46% to 59.70% (17 additional
+correct winners). The final weights remain near 50/50, evidence that both
+specifications continue to contribute rather than one serving as dead code.
 
 The defaults minimize mean log loss across the 2022-23 and 2023-24 validation
 seasons. The explored grid covered team prior variance 0.5-3.0, context variance
@@ -192,6 +254,23 @@ An overtime power-likelihood grid (0.40, 0.55, 0.70, 0.85, 1.00) selected 0.70,
 improving validation mean log loss from 0.658196 to 0.657943. The later 2024-25
 check also improved; 2025-26 was essentially flat and slightly worse.
 
+The advanced-model experiments were again selected on the 2022-23 and 2023-24
+validation seasons before inspecting the two later seasons:
+
+| Candidate | Validation mean log loss | Later-season mean | All games | Decision |
+|---|---:|---:|---:|---|
+| Previous single model | 0.657944 | 0.672220 | 0.664299 | Reference |
+| Classical James-Stein alone (\(\rho=1\)) | 0.672847 | 0.678447 | 0.674488 | Reject: excessive shrinkage |
+| Dynamic BMA before margin term | 0.657537 | 0.671140 | 0.663252 | Retain |
+| Final BMA + member-specific log margin | **0.657417** | **0.671099** | 0.663269 | Retain |
+
+The tiny aggregate difference between the last two rows comes from the warm-up
+season, which was not used for selection. The margin term was retained because
+it improved the declared validation objective, the later-season mean, Brier
+score, and accuracy. Fixed temperature scaling and a separate online Bayesian
+logit calibrator were rejected: both worsened the validation score, so neither
+was stacked onto already calibrated posterior probabilities.
+
 The model beats Elo on probability quality in every post-warm-up season, but
 2024-25 winner accuracy is slightly lower than Elo. Log loss remains the model
 selection objective because changing a classification threshold to chase one
@@ -202,8 +281,9 @@ season's hit rate would not improve the probability forecast.
 - Schedules/results come from `api-web.nhle.com`; per-game reports come from
   `api.nhle.com/stats/rest`. The public schemas are not versioned, so validation
   fails instead of silently imputing missing values.
-- Hyperparameters are fixed defaults in `BayesianPlackettLuce`; the benchmark
-  command requires no hidden notebook or private configuration.
+- Hyperparameters are fixed defaults in `BayesianPlackettLuce` and
+  `BayesianModelAverage`; the benchmark command requires no hidden notebook or
+  private configuration.
 - Current rolling features include xG, shots, SAT, rest, and special teams.
   A time-zone travel feature was researched but rejected: it worsened validation
   mean log loss from 0.658196 to 0.658442, and a strongly shrunk travel prior did
@@ -224,6 +304,15 @@ season's hit rate would not improve the probability forecast.
   Bayesian regularization and uncertainty for sparse rankings.
 - [Plackett (1975), *The Analysis of
   Permutations*](https://doi.org/10.2307/2346567): the ranking likelihood.
+- [James & Stein (1961), *Estimation with quadratic
+  loss*](https://digicoll.lib.berkeley.edu/record/112898): the multivariate
+  normal shrinkage result and its dimension-three boundary.
+- [Raftery, Kárný & Ettler (2010), *Online Prediction Under Model Uncertainty
+  via Dynamic Model Averaging*](https://doi.org/10.1198/TECH.2009.08104):
+  sequential model probabilities and forgetting under regime change.
+- [Davidson (1970), *On Extending the Bradley-Terry Model to Accommodate Ties
+  in Paired Comparison Experiments*](https://doi.org/10.1080/01621459.1970.10481082):
+  motivates treating overtime results as near-ties for rating updates.
 - [Marchenko & Pastur (1967), *Distribution of eigenvalues for some sets of
   random matrices*](https://doi.org/10.1070/SM1967v001n04ABEH001994): the
   sample-covariance noise spectrum.

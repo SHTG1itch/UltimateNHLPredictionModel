@@ -64,9 +64,10 @@ def test_positive_part_james_stein_shrinks_team_signal() -> None:
     for model in (shrunk, raw):
         model.mean[model.index["A"]] = 0.5
         model.mean[model.index["B"]] = -0.5
+        model.covariance *= 0.05
     shrunk_details = shrunk.predict_details("A", "B", played_on)
     raw_details = raw.predict_details("A", "B", played_on)
-    assert shrunk_details["james_stein_factor"] == 0.0
+    assert np.isclose(shrunk_details["james_stein_factor"], 0.8)
     assert raw_details["james_stein_factor"] == 1.0
     assert shrunk_details["home_win_probability"] < raw_details["home_win_probability"]
 

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ultimate-nhl-prediction-model"
 version = "0.1.0"
-description = "Leakage-safe Bayesian Plackett-Luce NHL game predictions with random-matrix covariance cleaning"
+description = "Leakage-safe Bayesian model-averaged NHL predictions with James-Stein and random-matrix shrinkage"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["numpy>=1.26"]
@@ -22,4 +22,3 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
-
