@@ -7,6 +7,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.error import HTTPError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 # Current and relocated/defunct clubs cover the modern seasons useful for
@@ -18,9 +19,39 @@ TEAM_CODES = (
     "TOR", "UTA", "VAN", "VGK", "WPG", "WSH", "ATL", "PHX",
 )
 API = "https://api-web.nhle.com/v1/club-schedule-season/{team}/{season}"
+STATS_API = "https://api.nhle.com/stats/rest/en/team/{report}"
+# Each report is league-wide and game-grained, avoiding one API request per
+# boxscore. Values are post-game observations and enter features only after the
+# corresponding prediction has been recorded.
+REPORT_FIELDS = {
+    "summary": {
+        "shotsForPerGame": "shots",
+        "faceoffWinPct": "faceoff_pct",
+    },
+    "powerplay": {
+        "powerPlayGoalsFor": "pp_goals",
+        "ppOpportunities": "pp_opportunities",
+    },
+    "penaltykill": {
+        "ppGoalsAgainst": "pk_goals_against",
+        "timesShorthanded": "times_shorthanded",
+    },
+    "realtime": {
+        "totalShotAttempts": "shot_attempts",
+    },
+}
+TEAM_STAT_FIELDS = tuple(
+    f"{side}_{field}"
+    for side in ("home", "away")
+    for field in (
+        "shots", "faceoff_pct", "pp_goals", "pp_opportunities",
+        "pk_goals_against", "times_shorthanded", "shot_attempts",
+    )
+)
 FIELDS = (
     "game_id", "season", "game_type", "game_date", "start_time_utc",
     "home_team", "away_team", "home_score", "away_score", "overtime",
+    *TEAM_STAT_FIELDS,
 )
 
 
@@ -38,6 +69,26 @@ def _fetch_team(team: str, season: int, timeout: float) -> list[dict]:
         if error.code == 404:
             return []
         raise
+
+
+def _fetch_report(season: int, game_type: int, report: str, timeout: float) -> list[dict]:
+    """Fetch every team's per-game rows for one compact NHL Stats report."""
+
+    query = urlencode(
+        {
+            "isAggregate": "false",
+            "isGame": "true",
+            "start": 0,
+            "limit": -1,
+            "cayenneExp": f"seasonId={season} and gameTypeId={game_type}",
+        }
+    )
+    request = Request(
+        f"{STATS_API.format(report=report)}?{query}",
+        headers={"User-Agent": "UltimateNHLPredictionModel/0.2"},
+    )
+    with urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed HTTPS host
+        return json.load(response).get("data", [])
 
 
 def download_seasons(
@@ -66,14 +117,30 @@ def download_seasons(
                 if game.get("gameState") in {"FINAL", "OFF"}:
                     games[int(game["id"])] = game
 
+    # Merge report columns by official game ID and H/R orientation. Every game
+    # must have exactly one home and one road team in each requested report.
+    stats: dict[tuple[int, str], dict[str, float]] = {}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(_fetch_report, season, game_type, report, timeout): report
+            for season in seasons
+            for game_type in (2, 3)
+            for report in REPORT_FIELDS
+        }
+        for future in as_completed(futures):
+            report = futures[future]
+            for record in future.result():
+                values = stats.setdefault((int(record["gameId"]), record["homeRoad"]), {})
+                for source, destination in REPORT_FIELDS[report].items():
+                    values[destination] = float(record.get(source) or 0.0)
+
     rows = []
     for game in games.values():
         # Preseason (type 1) is excluded because rosters and incentives differ.
         if game.get("gameType") not in {2, 3}:
             continue
         period = game.get("gameOutcome", {}).get("lastPeriodType", "REG")
-        rows.append(
-            {
+        row = {
                 "game_id": int(game["id"]),
                 "season": int(game["season"]),
                 "game_type": int(game["gameType"]),
@@ -84,8 +151,15 @@ def download_seasons(
                 "home_score": int(game["homeTeam"]["score"]),
                 "away_score": int(game["awayTeam"]["score"]),
                 "overtime": int(period in {"OT", "SO"}),
-            }
-        )
+        }
+        for side, orientation in (("home", "H"), ("away", "R")):
+            game_stats = stats.get((row["game_id"], orientation))
+            if game_stats is None or set(game_stats) != {
+                field.removeprefix(f"{side}_") for field in TEAM_STAT_FIELDS if field.startswith(side)
+            }:
+                raise ValueError(f"incomplete NHL Stats reports for game {row['game_id']} ({side})")
+            row.update({f"{side}_{field}": value for field, value in game_stats.items()})
+        rows.append(row)
 
     destination = Path(output)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -107,5 +181,6 @@ def read_games(path: str | Path) -> list[dict]:
     for row in rows:
         for field in ("game_id", "season", "game_type", "home_score", "away_score", "overtime"):
             row[field] = int(row[field])
+        for field in TEAM_STAT_FIELDS:
+            row[field] = float(row[field])
     return sorted(rows, key=lambda row: (row["start_time_utc"], row["game_id"]))
-

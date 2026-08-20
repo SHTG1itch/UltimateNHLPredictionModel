@@ -15,3 +15,9 @@ The downloader requests team season schedules concurrently, deduplicates them
 by official game ID, removes preseason games, and sorts by the official UTC
 start time. It never imputes game results.
 
+It also downloads four league-wide, per-game NHL Stats reports and joins them
+by official game ID plus home/road orientation. The resulting rows contain
+shots, total shot attempts, faceoff percentage, power-play goals/opportunities,
+and power-play goals allowed/times shorthanded. These are post-game facts: the
+walk-forward model may update rolling form with them only after forecasting
+that game, which prevents target leakage.

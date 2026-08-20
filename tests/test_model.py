@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import csv
 from datetime import date, timedelta
 
 import numpy as np
 
+from nhl_predictor.data import FIELDS, TEAM_STAT_FIELDS, read_games
 from nhl_predictor.model import BayesianPlackettLuce, backtest
 from nhl_predictor.random_matrix import clean_covariance
 
@@ -49,3 +51,27 @@ def test_mp_cleaner_is_positive_definite_and_detects_signal() -> None:
     assert np.linalg.eigvalsh(covariance).min() > 0
     assert diagnostics.signal_eigenvalues >= 1
     assert diagnostics.noise_eigenvalues + diagnostics.signal_eigenvalues == 8
+
+
+def test_enriched_game_csv_is_typed(tmp_path) -> None:
+    path = tmp_path / "games.csv"
+    row = {field: 0 for field in FIELDS}
+    row.update(
+        game_id=1,
+        season=20242025,
+        game_type=2,
+        game_date="2025-01-01",
+        start_time_utc="2025-01-01T00:00:00Z",
+        home_team="A",
+        away_team="B",
+        home_score=3,
+        away_score=2,
+    )
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=FIELDS)
+        writer.writeheader()
+        writer.writerow(row)
+
+    parsed = read_games(path)[0]
+    assert isinstance(parsed["game_id"], int)
+    assert all(isinstance(parsed[field], float) for field in TEAM_STAT_FIELDS)
