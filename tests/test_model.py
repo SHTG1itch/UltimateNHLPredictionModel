@@ -35,10 +35,16 @@ def test_repeated_wins_raise_probability() -> None:
 def test_overtime_result_has_smaller_posterior_update() -> None:
     regulation = BayesianPlackettLuce(["A", "B"])
     overtime = BayesianPlackettLuce(["A", "B"])
+    near_tie = BayesianPlackettLuce(["A", "B"], overtime_credit=0.9)
     played_on = date(2025, 1, 1)
     regulation.update("A", "B", played_on, True, {"overtime": 0})
     overtime.update("A", "B", played_on, True, {"overtime": 1})
-    assert regulation.mean[regulation.index["A"]] > overtime.mean[overtime.index["A"]]
+    near_tie.update("A", "B", played_on, True, {"overtime": 1})
+    assert (
+        regulation.mean[regulation.index["A"]]
+        > overtime.mean[overtime.index["A"]]
+        > near_tie.mean[near_tie.index["A"]]
+    )
 
 
 def test_positive_part_james_stein_shrinks_team_signal() -> None:

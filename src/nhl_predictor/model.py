@@ -67,6 +67,7 @@ class BayesianPlackettLuce:
         offseason_variance: float = 0.025,
         form_features: tuple[str, ...] = DEFAULT_FORM_FEATURES,
         overtime_weight: float = 0.70,
+        overtime_credit: float = 1.0,
         james_stein_scale: float = 0.0,
     ) -> None:
         unique_teams = sorted(set(teams))
@@ -83,6 +84,8 @@ class BayesianPlackettLuce:
             raise ValueError("decay and retention must be probabilities")
         if not 0.0 < overtime_weight <= 1.0:
             raise ValueError("overtime_weight must be in (0, 1]")
+        if not 0.5 <= overtime_credit <= 1.0:
+            raise ValueError("overtime_credit must be in [0.5, 1]")
         if james_stein_scale < 0.0:
             raise ValueError("james_stein_scale cannot be negative")
         if not form_features or len(set(form_features)) != len(form_features):
@@ -112,6 +115,7 @@ class BayesianPlackettLuce:
         self.offseason_retention = offseason_retention
         self.offseason_variance = offseason_variance
         self.overtime_weight = overtime_weight
+        self.overtime_credit = overtime_credit
         self.james_stein_scale = james_stein_scale
         # Columns hold GF, GA, SF, SA, PP goals/opportunities, PP goals allowed,
         # times shorthanded, shot attempts for/against, xGF/xGA, and goals
@@ -343,7 +347,10 @@ class BayesianPlackettLuce:
         self._roll_week(played_on)
         features = self._features(home, away, played_on)
         probability = _sigmoid(float(features @ self.mean))
-        residual = float(home_win) - probability
+        target = float(home_win)
+        if game is not None and game.get("overtime"):
+            target = self.overtime_credit if home_win else 1.0 - self.overtime_credit
+        residual = target - probability
         projected = self.covariance @ features
         # An OT/SO game is a near-tie ranking, so a fractional power likelihood
         # can keep it from moving strength as much as a regulation result.
@@ -391,6 +398,7 @@ class BayesianModelAverage:
             {
                 "form_decay": 0.92,
                 "james_stein_scale": 0.05,
+                "overtime_credit": 0.90,
             },
         )
         self.names = ("possession", "fast_james_stein")
