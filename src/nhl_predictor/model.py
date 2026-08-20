@@ -436,7 +436,8 @@ class BayesianModelAverage:
             BayesianPlackettLuce(teams, **(specification | model_options))
             for specification in specifications
         ]
-        self.log_weights = np.full(len(self.members), -log(len(self.members)))
+        self.log_prior = np.log([0.54, 0.46])
+        self.log_weights = self.log_prior.copy()
         self.forgetting = forgetting
         self.likelihood_power = likelihood_power
         self._pending: tuple[str, str, date, NDArray[np.float64]] | None = None
@@ -519,7 +520,8 @@ class BayesianModelAverage:
         probabilities = self._pending[3]
         likelihoods = probabilities if home_win else 1.0 - probabilities
         self.log_weights = (
-            self.forgetting * self.log_weights
+            self.log_prior
+            + self.forgetting * (self.log_weights - self.log_prior)
             + self.likelihood_power * np.log(np.clip(likelihoods, 1e-12, 1.0))
         )
         self.log_weights -= np.logaddexp.reduce(self.log_weights)
