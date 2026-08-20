@@ -419,7 +419,7 @@ class BayesianModelAverage:
                 "form_decay": 0.94,
             },
             {
-                "form_decay": 0.70,
+                "form_decay": 0.80,
                 "james_stein_scale": 0.22,
                 "overtime_weight": 0.40,
                 "overtime_credit": 0.90,
@@ -431,7 +431,7 @@ class BayesianModelAverage:
             BayesianPlackettLuce(teams, **(specification | model_options))
             for specification in specifications
         ]
-        self.weights = np.array([0.54, 0.46])
+        self.weights = np.array([0.55, 0.45])
 
     @property
     def spectral_diagnostics(self) -> SpectralDiagnostics | None:

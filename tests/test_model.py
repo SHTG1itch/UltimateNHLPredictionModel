@@ -95,10 +95,10 @@ def test_model_average_uses_fixed_validation_weights() -> None:
         member.mean[member.index["B"]] = -direction
         member.covariance *= 1e-6
     details = model.predict_details("A", "B", played_on)
-    assert details["possession_weight"] == 0.54
-    assert details["fast_james_stein_weight"] == 0.46
+    assert details["possession_weight"] == 0.55
+    assert details["fast_james_stein_weight"] == 0.45
     model.update("A", "B", played_on, True)
-    assert np.allclose(model.weights, [0.54, 0.46])
+    assert np.allclose(model.weights, [0.55, 0.45])
 
 
 def test_backtest_predicts_before_learning_result() -> None:
