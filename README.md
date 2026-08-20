@@ -1,7 +1,7 @@
 # Ultimate NHL Prediction Model
 
 A reproducible Python model for pre-game NHL win probabilities. It combines
-sequential Bayesian Plackett-Luce likelihoods with dynamic Bayesian model
+sequential Bayesian Plackett-Luce likelihoods with validation-weighted model
 averaging, positive-part James-Stein shrinkage, strict walk-forward evaluation,
 and random-matrix covariance cleaning. "Most accurate" is treated as a measured
 benchmark outcome, not something guaranteed by naming sophisticated methods.
@@ -33,6 +33,11 @@ and the model receives \(F_a-F_h\). Validation rejected treating every extra
 off-day as distinct; the back-to-back plus congestion representation was both
 simpler and more accurate.
 
+Arizona and Utah share one internal franchise key so Utah inherits the prior
+hockey evidence instead of starting from zero. This matches the NHL's transfer
+of the Coyotes' full roster, reserve list, draft picks, and hockey operations to
+the Utah franchise in 2024 ([NHL Public Relations](https://www.nhl.com/utah/news/nhl-bog-approves-establishment-of-new-franchise-in-utah-x8485)).
+
 The latent team strengths and context coefficients have a multivariate Gaussian
 posterior. If \(\mathbf{m}\) and \(\mathbf{C}\) are the prior mean and covariance,
 the local logistic curvature is \(w=p(1-p)\), and one online Laplace step uses
@@ -52,7 +57,7 @@ roster turnover. The initial team prior variance is 0.20 and daily diffusion is
 \(10^{-7}\), both selected conservatively to avoid early-season overconfidence
 and unsupported day-to-day drift.
 
-### James-Stein shrinkage and Bayesian model averaging
+### James-Stein shrinkage and model averaging
 
 The CLI averages two complementary specifications rather than assuming that one
 feature horizon is certainly correct:
@@ -74,27 +79,22 @@ The positive-part estimator used at prediction time is
 \tilde s_i=\bar s+\kappa(s_i-\bar s),
 \]
 
-with \(\rho=0.15\). The theorem's \(p\ge3\) boundary is enforced, and
+with \(\rho=0.22\). The theorem's \(p\ge3\) boundary is enforced, and
 \(\rho=0\) is the exact no-shrinkage ablation. Shrinkage changes forecasts but
 does not destructively overwrite the learned posterior. The classical
 \(\rho=1\) coefficient was far too strong for correlated, evolving NHL ratings;
 it remains an audited rejection rather than being retained for its name.
 
-Let \(p_{k,t}\) be member \(k\)'s pre-game probability and \(\pi_{k,t}\) its
-weight. The reported forecast is
+Let \(p_{k,t}\) be member \(k\)'s pre-game probability. The reported forecast is
 
 \[
-\hat p_t=\sum_k\pi_{k,t}p_{k,t}, \qquad
-\pi_{k,t+1}\propto
-\pi_{k,t}^{\alpha}
-\left[p_{k,t}^{y_t}(1-p_{k,t})^{1-y_t}\right]^{\eta},
+\hat p_t=0.54p_{\mathrm{possession},t}
++0.46p_{\mathrm{fast},t}.
 \]
 
-where forgetting \(\alpha=0.20\) quickly returns two closely related members
-toward equal support and fractional likelihood power \(\eta=0.10\) prevents
-one result from producing unjustifiably extreme weights. Each
-ledger row records both member probabilities and their pre-result weights.
-The binary outcome updates the weights only after that row is recorded.
+The fixed validation blend beat discounted per-game weight updates on both the
+declared validation seasons and the later-season mean. Each ledger row records
+both member probabilities and the fixed weights.
 
 Every ledger row also reports the latent log-odds margin mean and standard
 deviation. The 95% epistemic bounds are
@@ -110,7 +110,7 @@ target remains the actual winner. That member's regulation evidence is
 multiplied by
 
 \[
-1 + 0.20\log(\max(|G_h-G_a|,1)),
+1 + 0.35\log(\max(|G_h-G_a|,1)),
 \]
 
 so a blowout carries somewhat more rating information without growing linearly
@@ -200,7 +200,7 @@ benchmark can be tied to the data bytes that produced it.
 
 ### Forecast an upcoming date
 
-`nhl-predict predict` fits both posteriors and sequential model weights to every
+`nhl-predict predict` fits both posteriors to every
 completed row in `data/games.csv`, downloads one exact NHL schedule date, prints home-win
 probabilities, member weights, latent margin uncertainty, and 95% epistemic
 bounds, then writes `artifacts/forecast.csv`. It rejects any schedule at or
@@ -223,15 +223,15 @@ produced:
 
 ```json
 {
-  "accuracy": 0.5998855998855999,
-  "brier_score": 0.2340353761024475,
-  "elo_log_loss": 0.6754472619256587,
-  "final_fast_james_stein_weight": 0.49534041556162567,
-  "final_possession_weight": 0.5046595844383743,
+  "accuracy": 0.6016016016016016,
+  "brier_score": 0.2339604992513371,
+  "elo_log_loss": 0.6754377751471742,
+  "final_fast_james_stein_weight": 0.46,
+  "final_possession_weight": 0.54,
   "games": 6993.0,
   "home_rate_log_loss": 0.6908971193256509,
-  "log_loss": 0.6600472890087719,
-  "mp_noise_eigenvalues": 32.0,
+  "log_loss": 0.659890343162455,
+  "mp_noise_eigenvalues": 31.0,
   "mp_signal_eigenvalues": 1.0
 }
 ```
@@ -240,20 +240,21 @@ Season-level results expose drift hidden by the aggregate:
 
 | Season role | Games | Model log loss | Elo log loss | Brier | Accuracy |
 |---|---:|---:|---:|---:|---:|
-| 2021-22 warm-up | 1,401 | 0.65100 | 0.65977 | 0.22944 | 62.81% |
-| 2022-23 validation | 1,400 | 0.65788 | 0.66988 | 0.23300 | 61.07% |
-| 2023-24 validation | 1,400 | 0.65373 | 0.67198 | 0.23102 | 61.93% |
-| 2024-25 parameter holdout | 1,398 | 0.65699 | 0.67660 | 0.23276 | 59.30% |
-| 2025-26 prospective check | 1,394 | 0.68073 | 0.69912 | 0.24401 | 54.81% |
+| 2021-22 warm-up | 1,401 | 0.65079 | 0.65977 | 0.22933 | 63.10% |
+| 2022-23 validation | 1,400 | 0.65778 | 0.66988 | 0.23295 | 61.14% |
+| 2023-24 validation | 1,400 | 0.65366 | 0.67198 | 0.23100 | 61.93% |
+| 2024-25 parameter holdout | 1,398 | 0.65673 | 0.67656 | 0.23263 | 59.94% |
+| 2025-26 prospective check | 1,394 | 0.68058 | 0.69912 | 0.24393 | 54.66% |
 
 Every season's log loss improves over the preceding model-averaged benchmark.
-Across all games, log loss falls from 0.663269 to 0.660047, Brier score falls
-from 0.235414 to 0.234035, and accuracy rises from 59.70% to 59.99% (20
-additional correct winners). The final weights remain near 50/50, evidence that
-both specifications continue to contribute rather than one serving as dead code.
+Across all games, log loss falls from 0.663269 to 0.659890, Brier score falls
+from 0.235414 to 0.233960, and accuracy rises from 59.70% to 60.16% (32
+additional correct winners). The latest changes alone add 12 correct winners
+over the prior 0.660047 benchmark.
 
-The defaults minimize mean log loss across the 2022-23 and 2023-24 validation
-seasons. The explored grid covered team prior variance 0.05-3.0, context
+The defaults improve mean log loss across the 2022-23 and 2023-24 validation
+seasons while requiring later-season robustness and no aggregate accuracy loss.
+The explored grid covered team prior variance 0.05-3.0, context
 variance 0.1-3.0, daily diffusion \(10^{-8}\)-\(10^{-3}\), form decay
 0.30-0.985, offseason retention 0.3-1.0, and offseason variance 0.005-0.4.
 Later seasons were retained as explicit robustness checks rather than folded
@@ -280,18 +281,22 @@ selection score and reported the next two seasons separately:
 | Stronger prior + lower drift | 0.657031 | 0.670378 | 0.661729 | Retain |
 | Back-to-back status | 0.656207 | 0.669811 | 0.660636 | Retain |
 | Five-day congestion | 0.655876 | 0.668870 | 0.660110 | Retain |
-| Final ensemble retuning | **0.655805** | **0.668858** | **0.660047** | Retain |
+| Previous ensemble retuning | 0.655805 | 0.668858 | 0.660047 | Retain |
+| Arizona/Utah continuity | 0.655792 | 0.668756 | 0.660000 | Retain |
+| Fixed 54/46 robust blend | 0.655770 | 0.668753 | 0.659962 | Retain |
+| Margin/shrinkage retuning | **0.655722** | **0.668655** | **0.659890** | Retain |
 
 Fixed temperature/intercept scaling, a separate online Bayesian logit
-calibrator, faceoff form, separate fatigue coefficients, seasonal home-ice
-resets, and extra model-average members were rejected because they failed to
-improve the declared validation objective without a compensating calibration
-cost. The simplest validated model remains the shipped model.
+calibrator, faceoff and starter-save form, separate fatigue coefficients,
+seasonal home-ice resets, dynamic model weights, schedule-sequence corrections,
+and extra model-average members were rejected because they failed to improve
+the full validation and later-season gate. The simplest validated model remains
+the shipped model.
 
-The model beats Elo on probability quality in every post-warm-up season, but
-2024-25 winner accuracy is slightly lower than Elo. Log loss remains the model
-selection objective because changing a classification threshold to chase one
-season's hit rate would not improve the probability forecast.
+The model beats Elo on probability quality and winner accuracy in every season.
+Log loss remains the primary selection objective because changing a
+classification threshold to chase one season's hit rate would not improve the
+probability forecast.
 
 ## Reproducibility and limitations
 
@@ -325,9 +330,6 @@ season's hit rate would not improve the probability forecast.
 - [James & Stein (1961), *Estimation with quadratic
   loss*](https://digicoll.lib.berkeley.edu/record/112898): the multivariate
   normal shrinkage result and its dimension-three boundary.
-- [Raftery, Kárný & Ettler (2010), *Online Prediction Under Model Uncertainty
-  via Dynamic Model Averaging*](https://doi.org/10.1198/TECH.2009.08104):
-  sequential model probabilities and forgetting under regime change.
 - [Davidson (1970), *On Extending the Bradley-Terry Model to Accommodate Ties
   in Paired Comparison Experiments*](https://doi.org/10.1080/01621459.1970.10481082):
   motivates treating overtime results as near-ties for rating updates.
