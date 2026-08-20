@@ -103,6 +103,7 @@ python -m pip install -e ".[dev]"
 
 nhl-predict download --seasons 20212022 20222023 20232024 20242025 20252026
 nhl-predict backtest
+nhl-predict predict --date 2026-10-10
 python -m pytest
 ```
 
@@ -110,6 +111,20 @@ Downloaded data is ignored by Git. The downloader stores one compact CSV rather
 than raw API responses, and generated ledgers go under ignored `artifacts/`.
 The complete five-season development workspace is measured during validation
 and remains several orders of magnitude below the hard 10 GB ceiling.
+
+### Forecast an upcoming date
+
+`nhl-predict predict` fits the posterior to every completed row in
+`data/games.csv`, downloads one exact NHL schedule date, prints home-win
+probabilities, and writes `artifacts/forecast.csv`. It rejects any schedule at
+or before the latest training result, preventing an accidental historical
+forecast from using future games. An unpublished or game-free date returns an
+empty prediction list without creating a misleading artifact.
+
+The command predicts regular-season and playoff games only. New teams present
+in a future schedule receive the same zero-centered prior as every other unseen
+team. Forecasts currently use information through the latest completed game;
+they do not pretend that unrecorded starting-goalie or lineup news is known.
 
 ## Verified benchmark
 

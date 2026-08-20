@@ -378,3 +378,56 @@ def backtest(games: list[dict], **model_options: float) -> tuple[list[dict], dic
                 )
             )
     return predictions, metrics
+
+
+def fit(
+    games: list[dict],
+    *,
+    extra_teams: Iterable[str] = (),
+    **model_options: float,
+) -> tuple[BayesianPlackettLuce, int | None]:
+    """Fit the sequential posterior to all completed games for live forecasts."""
+
+    if not games:
+        raise ValueError("games cannot be empty")
+    teams = {row[side] for row in games for side in ("home_team", "away_team")}
+    model = BayesianPlackettLuce(teams | set(extra_teams), **model_options)
+    current_season: int | None = None
+    for row in sorted(games, key=lambda game: (game["start_time_utc"], game["game_id"])):
+        if current_season is not None and row.get("season") != current_season:
+            model.start_new_season()
+        current_season = row.get("season", current_season)
+        played_on = date.fromisoformat(row["game_date"])
+        model.update(
+            row["home_team"],
+            row["away_team"],
+            played_on,
+            row["home_score"] > row["away_score"],
+            row,
+        )
+    return model, current_season
+
+
+def forecast(games: list[dict], schedule: list[dict], **model_options: float) -> list[dict]:
+    """Fit completed history and forecast an exact future schedule."""
+
+    if not schedule:
+        return []
+    latest_result = max(row["start_time_utc"] for row in games)
+    if min(row["start_time_utc"] for row in schedule) <= latest_result:
+        raise ValueError("scheduled games must occur after every training result")
+
+    scheduled_teams = {
+        row[side] for row in schedule for side in ("home_team", "away_team")
+    }
+    model, current_season = fit(games, extra_teams=scheduled_teams, **model_options)
+    predictions = []
+    for row in sorted(schedule, key=lambda game: (game["start_time_utc"], game["game_id"])):
+        if current_season is not None and row.get("season") != current_season:
+            model.start_new_season()
+        current_season = row.get("season", current_season)
+        probability = model.predict(
+            row["home_team"], row["away_team"], date.fromisoformat(row["game_date"])
+        )
+        predictions.append({**row, "home_win_probability": probability})
+    return predictions

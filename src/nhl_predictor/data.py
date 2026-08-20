@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import urlencode
@@ -20,6 +21,7 @@ TEAM_CODES = (
 )
 API = "https://api-web.nhle.com/v1/club-schedule-season/{team}/{season}"
 STATS_API = "https://api.nhle.com/stats/rest/en/team/{report}"
+SCHEDULE_API = "https://api-web.nhle.com/v1/schedule/{date}"
 # Each report is league-wide and game-grained, avoiding one API request per
 # boxscore. Values are post-game observations and enter features only after the
 # corresponding prediction has been recorded.
@@ -89,6 +91,41 @@ def _fetch_report(season: int, game_type: int, report: str, timeout: float) -> l
     )
     with urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed HTTPS host
         return json.load(response).get("data", [])
+
+
+def _parse_schedule(payload: dict, target_date: str) -> list[dict]:
+    """Extract only the requested date from the API's surrounding game week."""
+
+    games = []
+    for day in payload.get("gameWeek", []):
+        for game in day.get("games", []):
+            game_date = game.get("gameDate", day.get("date"))
+            if game_date != target_date or game.get("gameType") not in {2, 3}:
+                continue
+            games.append(
+                {
+                    "game_id": int(game["id"]),
+                    "season": int(game["season"]),
+                    "game_type": int(game["gameType"]),
+                    "game_date": game_date,
+                    "start_time_utc": game["startTimeUTC"],
+                    "home_team": game["homeTeam"]["abbrev"],
+                    "away_team": game["awayTeam"]["abbrev"],
+                }
+            )
+    return sorted(games, key=lambda game: (game["start_time_utc"], game["game_id"]))
+
+
+def fetch_schedule(target_date: str, *, timeout: float = 30.0) -> list[dict]:
+    """Fetch the NHL schedule for one exact ISO date."""
+
+    date.fromisoformat(target_date)  # Reject ambiguous/non-ISO dates at the CLI boundary.
+    request = Request(
+        SCHEDULE_API.format(date=target_date),
+        headers={"User-Agent": "UltimateNHLPredictionModel/0.2"},
+    )
+    with urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed HTTPS host
+        return _parse_schedule(json.load(response), target_date)
 
 
 def download_seasons(

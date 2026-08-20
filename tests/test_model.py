@@ -5,8 +5,8 @@ from datetime import date, timedelta
 
 import numpy as np
 
-from nhl_predictor.data import FIELDS, TEAM_STAT_FIELDS, read_games
-from nhl_predictor.model import BayesianPlackettLuce, backtest
+from nhl_predictor.data import FIELDS, TEAM_STAT_FIELDS, _parse_schedule, read_games
+from nhl_predictor.model import BayesianPlackettLuce, backtest, forecast
 from nhl_predictor.random_matrix import clean_covariance
 
 
@@ -105,3 +105,65 @@ def test_current_boxscore_enters_form_only_after_update() -> None:
     model.update("A", "B", played_on, True, game)
     assert model.form[model.index["A"], 0] == 4
     assert model.form[model.index["B"], 0] == 2
+
+
+def test_future_schedule_parser_and_forecast() -> None:
+    payload = {
+        "gameWeek": [
+            {
+                "date": "2025-10-10",
+                "games": [
+                    {
+                        "id": 2,
+                        "season": 20252026,
+                        "gameType": 2,
+                        "startTimeUTC": "2025-10-10T23:00:00Z",
+                        "homeTeam": {"abbrev": "A"},
+                        "awayTeam": {"abbrev": "B"},
+                    },
+                    {"id": 99, "gameType": 1, "gameDate": "2025-10-11"},
+                ]
+            }
+        ]
+    }
+    schedule = _parse_schedule(payload, "2025-10-10")
+    history = [
+        {
+            "game_id": 1,
+            "season": 20242025,
+            "game_date": "2025-04-01",
+            "start_time_utc": "2025-04-01T23:00:00Z",
+            "home_team": "A",
+            "away_team": "B",
+            "home_score": 3,
+            "away_score": 2,
+        }
+    ]
+    predictions = forecast(history, schedule)
+    assert predictions[0]["game_id"] == 2
+    assert 0.0 < predictions[0]["home_win_probability"] < 1.0
+
+
+def test_forecast_rejects_historical_schedule() -> None:
+    history = [
+        {
+            "game_id": 1,
+            "game_date": "2025-01-02",
+            "start_time_utc": "2025-01-02T00:00:00Z",
+            "home_team": "A",
+            "away_team": "B",
+            "home_score": 3,
+            "away_score": 2,
+        }
+    ]
+    schedule = [
+        {
+            "game_id": 2,
+            "game_date": "2025-01-01",
+            "start_time_utc": "2025-01-01T00:00:00Z",
+            "home_team": "A",
+            "away_team": "B",
+        }
+    ]
+    with np.testing.assert_raises_regex(ValueError, "after every training result"):
+        forecast(history, schedule)
