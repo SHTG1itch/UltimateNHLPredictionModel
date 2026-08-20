@@ -122,10 +122,15 @@ def test_current_boxscore_enters_form_only_after_update() -> None:
         "away_pk_goals_against": 1,
         "away_times_shorthanded": 3,
         "away_shot_attempts": 50,
+        "home_xg": 3.2,
+        "away_xg": 2.1,
+        "xg_available": 1,
     }
     model.update("A", "B", played_on, True, game)
     assert model.form[model.index["A"], 0] == 4
     assert model.form[model.index["B"], 0] == 2
+    assert model.form[model.index["A"], 10] == 3.2
+    assert model.form[model.index["A"], 12] == 4
 
 
 def test_future_schedule_parser_and_forecast() -> None:

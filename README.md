@@ -15,10 +15,10 @@ P(h \succ a) = \sigma(s_h - s_a + \boldsymbol{\beta}^{T}\mathbf{x}_{ha}).
 \]
 
 The context vector contains home ice, differential rest, and rolling contrasts
-for goal share, shot share, shooting percentage, save percentage, special teams,
-and total-shot-attempt share (SAT/Corsi). Every rolling rate uses conservative
-league-average beta pseudo-counts and exponentially decayed sufficient
-statistics. With decay 0.96, a game's weight halves after approximately 17
+for expected-goal share, shot share, special teams, total-shot-attempt share
+(SAT/Corsi), finishing above xG, and goals saved above xG. Every rolling rate
+uses conservative league-average pseudo-counts and exponentially decayed
+sufficient statistics. With decay 0.96, a game's weight halves after about 17
 subsequent team games. Current-game statistics never enter its own prediction.
 
 The latent team strengths and context coefficients have a multivariate Gaussian
@@ -87,10 +87,10 @@ web schedule API. It then fetches league-wide per-game `summary`, `powerplay`,
 by official game ID and home/road orientation, and incomplete joins fail loudly.
 
 The compact CSV contains scores, shots, shot attempts, faceoffs, power-play
-goals/opportunities, and penalty-kill goals allowed/times shorthanded. The API
-calls are season-level rather than one boxscore request per game, which keeps
-downloads fast and storage small. See [data/README.md](data/README.md) for the
-schema and storage policy.
+goals/opportunities, penalty-kill goals allowed/times shorthanded, and MoneyPuck
+expected goals. Listed shot ZIPs are aggregated in memory and discarded. Only
+two xG totals and a coverage flag survive per game. See
+[data/README.md](data/README.md) for attribution, terms, schema, and storage.
 
 ## Quick start
 
@@ -134,12 +134,12 @@ through 2025-26 produced:
 
 ```json
 {
-  "accuracy": 0.5933075933075933,
-  "brier_score": 0.2360943280633812,
+  "accuracy": 0.5938795938795939,
+  "brier_score": 0.2360217323753095,
   "elo_log_loss": 0.6754472619256587,
   "games": 6993.0,
   "home_rate_log_loss": 0.6908971193256509,
-  "log_loss": 0.664632348327156
+  "log_loss": 0.664549171637148
 }
 ```
 
@@ -147,17 +147,24 @@ Season-level results expose drift hidden by the aggregate:
 
 | Season role | Games | Model log loss | Elo log loss | Brier | Accuracy |
 |---|---:|---:|---:|---:|---:|
-| 2021-22 warm-up | 1,401 | 0.66166 | 0.65977 | 0.23419 | 61.67% |
-| 2022-23 validation | 1,400 | 0.66203 | 0.66988 | 0.23490 | 60.00% |
-| 2023-24 validation | 1,400 | 0.65496 | 0.67198 | 0.23157 | 61.21% |
-| 2024-25 parameter holdout | 1,398 | 0.66100 | 0.67660 | 0.23456 | 58.37% |
-| 2025-26 prospective check | 1,394 | 0.68359 | 0.69912 | 0.24528 | 55.38% |
+| 2021-22 warm-up | 1,401 | 0.66194 | 0.65977 | 0.23418 | 61.74% |
+| 2022-23 validation | 1,400 | 0.66198 | 0.66988 | 0.23480 | 60.21% |
+| 2023-24 validation | 1,400 | 0.65441 | 0.67198 | 0.23133 | 61.14% |
+| 2024-25 parameter holdout | 1,398 | 0.66117 | 0.67660 | 0.23467 | 59.01% |
+| 2025-26 prospective check | 1,394 | 0.68332 | 0.69912 | 0.24516 | 54.81% |
 
 The defaults minimize mean log loss across the 2022-23 and 2023-24 validation
 seasons. The explored grid covered team prior variance 0.5-3.0, context variance
 0.1-3.0, daily diffusion \(10^{-6}\)-\(10^{-3}\), form decay 0.85-0.985,
 offseason retention 0.5-1.0, and offseason variance 0.01-0.4. Those values were
 frozen before the later-season checks under the selected defaults.
+
+Shot-quality feature selection used the same validation seasons. Eight fixed
+ablations compared the previous score/shot percentages with xG share and xG
+residuals. The retained six-feature set improved validation mean log loss from
+0.658493 to 0.658196. It also improves the five-season aggregate modestly; raw
+goal share and actual shooting/save percentages were removed as redundant,
+noisier versions of the xG decomposition.
 
 The model beats Elo on probability quality in every post-warm-up season, but
 2024-25 winner accuracy is slightly lower than Elo. Log loss remains the model
@@ -171,10 +178,10 @@ season's hit rate would not improve the probability forecast.
   fails instead of silently imputing missing values.
 - Hyperparameters are fixed defaults in `BayesianPlackettLuce`; the benchmark
   command requires no hidden notebook or private configuration.
-- Current rolling features include scores, shots, SAT, rest, and special teams.
-  Starting goalies, injuries, travel distance, shot-level expected goals,
-  confirmed lineups, and market odds are not yet present. They require
-  timestamped historical snapshots; final rosters or later revisions leak.
+- Current rolling features include xG, shots, SAT, rest, and special teams.
+  Starting goalies, injuries, travel distance, confirmed lineups, and market
+  odds are not yet present. They require timestamped historical snapshots;
+  final rosters or later revisions leak.
 - "Most accurate" remains a benchmark target. Every model change must beat
   fixed baselines on later seasons rather than only fitting historical games.
 
@@ -194,5 +201,7 @@ season's hit rate would not improve the probability forecast.
 - [Macdonald (2012), *Evaluating NHL Goalies, Skaters, and Teams Using Weighted
   Shots*](https://arxiv.org/abs/1205.1746): shot quality, goaltending, and team
   evaluation motivate the rolling shot/finishing/save decomposition.
+- [MoneyPuck Download Data](https://moneypuck.com/data.htm): published shot
+  probabilities used under its attributed non-commercial data terms.
 - Forward validation preserves temporal order; this implementation enforces it
   by writing each forecast before updating any posterior or form statistic.

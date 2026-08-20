@@ -12,6 +12,26 @@ from numpy.typing import NDArray
 
 from .random_matrix import SpectralDiagnostics, clean_covariance
 
+FORM_FEATURES = (
+    "goal_share",
+    "shot_share",
+    "finishing",
+    "save",
+    "special_teams",
+    "sat_share",
+    "xg_share",
+    "xg_finishing",
+    "xg_saving",
+)
+DEFAULT_FORM_FEATURES = (
+    "xg_share",
+    "shot_share",
+    "special_teams",
+    "sat_share",
+    "xg_finishing",
+    "xg_saving",
+)
+
 
 def _sigmoid(value: float) -> float:
     """Numerically stable logistic link used by the two-item Plackett-Luce model."""
@@ -39,12 +59,13 @@ class BayesianPlackettLuce:
         teams: Iterable[str],
         *,
         team_prior_variance: float = 1.0,
-        context_prior_variance: float = 2.0,
+        context_prior_variance: float = 1.0,
         daily_process_variance: float = 0.00001,
         covariance_window_weeks: int = 104,
         form_decay: float = 0.96,
         offseason_retention: float = 0.60,
         offseason_variance: float = 0.025,
+        form_features: tuple[str, ...] = DEFAULT_FORM_FEATURES,
     ) -> None:
         unique_teams = sorted(set(teams))
         if len(unique_teams) < 2:
@@ -58,13 +79,19 @@ class BayesianPlackettLuce:
             raise ValueError("all variances must be positive")
         if not 0.0 < form_decay < 1.0 or not 0.0 <= offseason_retention <= 1.0:
             raise ValueError("decay and retention must be probabilities")
+        if not form_features or len(set(form_features)) != len(form_features):
+            raise ValueError("form_features must contain unique feature names")
+        unknown_features = set(form_features) - set(FORM_FEATURES)
+        if unknown_features:
+            raise ValueError(f"unknown form features: {', '.join(sorted(unknown_features))}")
 
         self.teams = unique_teams
         self.index = {team: i for i, team in enumerate(unique_teams)}
         self.team_count = len(unique_teams)
-        # Context coefficients learn home ice, rest, and six rolling team-form
-        # contrasts: goals, shots, finishing, save rate, special teams, and SAT.
-        self.context_count = 8
+        # Every selected form contrast gets one Bayesian coefficient after the
+        # fixed home-ice and rest terms.
+        self.form_features = form_features
+        self.context_count = 2 + len(form_features)
         dimension = self.team_count + self.context_count
         self.mean = np.zeros(dimension)
         variances = (
@@ -79,9 +106,9 @@ class BayesianPlackettLuce:
         self.offseason_retention = offseason_retention
         self.offseason_variance = offseason_variance
         # Columns hold GF, GA, SF, SA, PP goals/opportunities, PP goals allowed,
-        # times shorthanded, and shot attempts for/against. They are decayed
-        # sufficient statistics, not current-game inputs.
-        self.form = np.zeros((self.team_count, 10))
+        # times shorthanded, shot attempts for/against, xGF/xGA, and goals
+        # for/against in xG-covered games. They are decayed sufficient stats.
+        self.form = np.zeros((self.team_count, 14))
         self.last_date: date | None = None
         self.last_played: dict[str, date] = {}
         self.current_week: tuple[int, int] | None = None
@@ -98,41 +125,51 @@ class BayesianPlackettLuce:
 
         return (days(home) - days(away)) / 3.0
 
-    def _form_rates(self, team: str) -> NDArray[np.float64]:
+    def _form_rates(self, team: str) -> dict[str, float]:
         """Return Bayesian-smoothed rates from only the team's previous games."""
 
         (
             gf, ga, sf, sa, pp_goals, pp_chances, pk_goals,
-            pk_chances, sat_for, sat_against,
+            pk_chances, sat_for, sat_against, xgf, xga, xg_gf, xg_ga,
         ) = self.form[self.index[team]]
         # Pseudo-counts encode conservative league-average priors and disappear
         # as evidence accumulates. This stabilizes percentages early each season.
-        return np.array(
-            [
-                (gf + 30.0) / (gf + ga + 60.0),
-                (sf + 300.0) / (sf + sa + 600.0),
-                (gf + 4.75) / (sf + 50.0),
-                1.0 - (ga + 4.75) / (sa + 50.0),
-                (pp_goals + 2.0) / (pp_chances + 10.0),
-                1.0 - (pk_goals + 2.0) / (pk_chances + 10.0),
-                (sat_for + 600.0) / (sat_for + sat_against + 1200.0),
-            ]
-        )
+        return {
+            "goal_share": (gf + 30.0) / (gf + ga + 60.0),
+            "shot_share": (sf + 300.0) / (sf + sa + 600.0),
+            "finishing": (gf + 4.75) / (sf + 50.0),
+            "save": 1.0 - (ga + 4.75) / (sa + 50.0),
+            "power_play": (pp_goals + 2.0) / (pp_chances + 10.0),
+            "penalty_kill": 1.0 - (pk_goals + 2.0) / (pk_chances + 10.0),
+            "sat_share": (sat_for + 600.0) / (sat_for + sat_against + 1200.0),
+            "xg_share": (xgf + 30.0) / (xgf + xga + 60.0),
+            # Pearson-style residuals distinguish finishing and goaltending
+            # from chance quality while shrinking small xG samples toward zero.
+            "xg_finishing": (xg_gf - xgf) / sqrt(xgf + 10.0),
+            "xg_saving": (xga - xg_ga) / sqrt(xga + 10.0),
+        }
 
     def _form_features(self, home: str, away: str) -> NDArray[np.float64]:
         """Construct bounded home-minus-away log-odds form contrasts."""
 
         home_rates = self._form_rates(home)
         away_rates = self._form_rates(away)
-        differences = np.array([
-            _logit(home_rate) - _logit(away_rate)
-            for home_rate, away_rate in zip(home_rates, away_rates)
-        ])
+        rate_names = ("goal_share", "shot_share", "finishing", "save", "sat_share", "xg_share")
+        features = {
+            name: _logit(home_rates[name]) - _logit(away_rates[name])
+            for name in rate_names
+        }
         # PP and PK are combined into one team special-teams strength feature;
         # keeping both separately would add two highly collinear coefficients.
-        special_teams = (differences[4] + differences[5]) / 2.0
-        selected = np.r_[differences[:4], special_teams, differences[6]]
-        return np.clip(selected, -2.0, 2.0)
+        features["special_teams"] = (
+            _logit(home_rates["power_play"])
+            - _logit(away_rates["power_play"])
+            + _logit(home_rates["penalty_kill"])
+            - _logit(away_rates["penalty_kill"])
+        ) / 2.0
+        for name in ("xg_finishing", "xg_saving"):
+            features[name] = home_rates[name] - away_rates[name]
+        return np.clip([features[name] for name in self.form_features], -2.0, 2.0)
 
     def _features(self, home: str, away: str, played_on: date) -> NDArray[np.float64]:
         """Build the sparse comparison vector for one game."""
@@ -220,6 +257,7 @@ class BayesianPlackettLuce:
 
         home_index, away_index = self.index[home], self.index[away]
         self.form[[home_index, away_index]] *= self.form_decay
+        xg_available = bool(game.get("xg_available", 0))
         home_stats = np.array(
             [
                 game["home_score"], game["away_score"],
@@ -227,6 +265,10 @@ class BayesianPlackettLuce:
                 game["home_pp_goals"], game["home_pp_opportunities"],
                 game["home_pk_goals_against"], game["home_times_shorthanded"],
                 game["home_shot_attempts"], game["away_shot_attempts"],
+                game.get("home_xg", 0.0) if xg_available else 0.0,
+                game.get("away_xg", 0.0) if xg_available else 0.0,
+                game["home_score"] if xg_available else 0.0,
+                game["away_score"] if xg_available else 0.0,
             ],
             dtype=float,
         )
@@ -236,6 +278,7 @@ class BayesianPlackettLuce:
                 game["away_pp_goals"], game["away_pp_opportunities"],
                 game["away_pk_goals_against"], game["away_times_shorthanded"],
                 home_stats[9], home_stats[8],
+                home_stats[11], home_stats[10], home_stats[13], home_stats[12],
             ],
             dtype=float,
         )
