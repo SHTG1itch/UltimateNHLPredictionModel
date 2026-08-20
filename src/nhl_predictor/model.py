@@ -133,13 +133,13 @@ class BayesianPlackettLuce:
         self.spectral_diagnostics: SpectralDiagnostics | None = None
 
     def _rest_feature(self, home: str, away: str, played_on: date) -> float:
-        """Return bounded home-minus-away rest; unknown/opening rest is neutral."""
+        """Return home-minus-away rested status; opening rest is neutral."""
 
-        def days(team: str) -> int:
+        def rested(team: str) -> bool:
             previous = self.last_played.get(team)
-            return 3 if previous is None else min(max((played_on - previous).days - 1, 0), 3)
+            return previous is None or (played_on - previous).days > 1
 
-        return (days(home) - days(away)) / 3.0
+        return float(rested(home)) - float(rested(away))
 
     def _form_rates(self, team: str) -> dict[str, float]:
         """Return Bayesian-smoothed rates from only the team's previous games."""

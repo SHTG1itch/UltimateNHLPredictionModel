@@ -32,6 +32,15 @@ def test_repeated_wins_raise_probability() -> None:
     assert before < after < 1.0
 
 
+def test_rest_feature_only_penalizes_back_to_back_games() -> None:
+    model = BayesianPlackettLuce(["A", "B"])
+    played_on = date(2025, 1, 4)
+    model.last_played = {"A": date(2025, 1, 3), "B": date(2025, 1, 1)}
+    assert model._rest_feature("A", "B", played_on) == -1.0
+    model.last_played["A"] = date(2025, 1, 2)
+    assert model._rest_feature("A", "B", played_on) == 0.0
+
+
 def test_overtime_result_has_smaller_posterior_update() -> None:
     regulation = BayesianPlackettLuce(["A", "B"])
     overtime = BayesianPlackettLuce(["A", "B"])
