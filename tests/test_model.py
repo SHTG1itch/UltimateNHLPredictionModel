@@ -58,8 +58,10 @@ def test_log_margin_power_gives_a_blowout_more_evidence() -> None:
 
 
 def test_positive_part_james_stein_shrinks_team_signal() -> None:
-    shrunk = BayesianPlackettLuce(["A", "B", "C", "D"], james_stein_scale=1.0)
-    raw = BayesianPlackettLuce(["A", "B", "C", "D"])
+    shrunk = BayesianPlackettLuce(
+        ["A", "B", "C", "D"], team_prior_variance=1.0, james_stein_scale=1.0
+    )
+    raw = BayesianPlackettLuce(["A", "B", "C", "D"], team_prior_variance=1.0)
     played_on = date(2025, 1, 1)
     for model in (shrunk, raw):
         model.mean[model.index["A"]] = 0.5
