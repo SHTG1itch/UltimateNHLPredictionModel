@@ -19,8 +19,15 @@ def _sigmoid(value: float) -> float:
     return 1.0 / (1.0 + exp(-value)) if value >= 0 else exp(value) / (1.0 + exp(value))
 
 
+def _logit(probability: float) -> float:
+    """Map a smoothed rate to log-odds without numerical infinities."""
+
+    probability = min(max(probability, 1e-6), 1.0 - 1e-6)
+    return log(probability / (1.0 - probability))
+
+
 class BayesianPlackettLuce:
-    """Online Gaussian posterior over team strength, home ice, and rest.
+    """Online Gaussian posterior over team strength and pre-game context.
 
     A two-team Plackett-Luce ranking is the Bradley-Terry logistic likelihood.
     Each result receives a one-step Laplace/assumed-density update, so every
@@ -32,27 +39,49 @@ class BayesianPlackettLuce:
         teams: Iterable[str],
         *,
         team_prior_variance: float = 1.0,
-        context_prior_variance: float = 0.25,
-        daily_process_variance: float = 0.0005,
+        context_prior_variance: float = 2.0,
+        daily_process_variance: float = 0.00001,
         covariance_window_weeks: int = 104,
+        form_decay: float = 0.96,
+        offseason_retention: float = 0.60,
+        offseason_variance: float = 0.025,
     ) -> None:
         unique_teams = sorted(set(teams))
         if len(unique_teams) < 2:
             raise ValueError("at least two teams are required")
-        if min(team_prior_variance, context_prior_variance, daily_process_variance) <= 0:
+        if min(
+            team_prior_variance,
+            context_prior_variance,
+            daily_process_variance,
+            offseason_variance,
+        ) <= 0:
             raise ValueError("all variances must be positive")
+        if not 0.0 < form_decay < 1.0 or not 0.0 <= offseason_retention <= 1.0:
+            raise ValueError("decay and retention must be probabilities")
 
         self.teams = unique_teams
         self.index = {team: i for i, team in enumerate(unique_teams)}
         self.team_count = len(unique_teams)
-        # The final two coefficients learn home-ice and differential rest effects.
-        dimension = self.team_count + 2
+        # Context coefficients learn home ice, rest, and six rolling team-form
+        # contrasts: goals, shots, finishing, save rate, special teams, and SAT.
+        self.context_count = 8
+        dimension = self.team_count + self.context_count
         self.mean = np.zeros(dimension)
-        variances = [team_prior_variance] * self.team_count + [context_prior_variance] * 2
+        variances = (
+            [team_prior_variance] * self.team_count
+            + [context_prior_variance] * self.context_count
+        )
         self.covariance = np.diag(variances).astype(float)
         self.daily_process_variance = daily_process_variance
         self.diffusion = np.eye(self.team_count) * daily_process_variance
         self.covariance_window_weeks = covariance_window_weeks
+        self.form_decay = form_decay
+        self.offseason_retention = offseason_retention
+        self.offseason_variance = offseason_variance
+        # Columns hold GF, GA, SF, SA, PP goals/opportunities, PP goals allowed,
+        # times shorthanded, and shot attempts for/against. They are decayed
+        # sufficient statistics, not current-game inputs.
+        self.form = np.zeros((self.team_count, 10))
         self.last_date: date | None = None
         self.last_played: dict[str, date] = {}
         self.current_week: tuple[int, int] | None = None
@@ -69,6 +98,42 @@ class BayesianPlackettLuce:
 
         return (days(home) - days(away)) / 3.0
 
+    def _form_rates(self, team: str) -> NDArray[np.float64]:
+        """Return Bayesian-smoothed rates from only the team's previous games."""
+
+        (
+            gf, ga, sf, sa, pp_goals, pp_chances, pk_goals,
+            pk_chances, sat_for, sat_against,
+        ) = self.form[self.index[team]]
+        # Pseudo-counts encode conservative league-average priors and disappear
+        # as evidence accumulates. This stabilizes percentages early each season.
+        return np.array(
+            [
+                (gf + 30.0) / (gf + ga + 60.0),
+                (sf + 300.0) / (sf + sa + 600.0),
+                (gf + 4.75) / (sf + 50.0),
+                1.0 - (ga + 4.75) / (sa + 50.0),
+                (pp_goals + 2.0) / (pp_chances + 10.0),
+                1.0 - (pk_goals + 2.0) / (pk_chances + 10.0),
+                (sat_for + 600.0) / (sat_for + sat_against + 1200.0),
+            ]
+        )
+
+    def _form_features(self, home: str, away: str) -> NDArray[np.float64]:
+        """Construct bounded home-minus-away log-odds form contrasts."""
+
+        home_rates = self._form_rates(home)
+        away_rates = self._form_rates(away)
+        differences = np.array([
+            _logit(home_rate) - _logit(away_rate)
+            for home_rate, away_rate in zip(home_rates, away_rates)
+        ])
+        # PP and PK are combined into one team special-teams strength feature;
+        # keeping both separately would add two highly collinear coefficients.
+        special_teams = (differences[4] + differences[5]) / 2.0
+        selected = np.r_[differences[:4], special_teams, differences[6]]
+        return np.clip(selected, -2.0, 2.0)
+
     def _features(self, home: str, away: str, played_on: date) -> NDArray[np.float64]:
         """Build the sparse comparison vector for one game."""
 
@@ -77,9 +142,21 @@ class BayesianPlackettLuce:
         features = np.zeros(self.mean.size)
         features[self.index[home]] = 1.0
         features[self.index[away]] = -1.0
-        features[-2] = 1.0  # Constant home-ice log-worth advantage.
-        features[-1] = self._rest_feature(home, away, played_on)
+        features[self.team_count] = 1.0  # Constant home-ice log-worth advantage.
+        features[self.team_count + 1] = self._rest_feature(home, away, played_on)
+        features[self.team_count + 2 :] = self._form_features(home, away)
         return features
+
+    def start_new_season(self) -> None:
+        """Partially pool last season toward league average after roster churn."""
+
+        self.mean[: self.team_count] *= self.offseason_retention
+        team_slice = np.s_[: self.team_count, : self.team_count]
+        self.covariance[team_slice] += np.eye(self.team_count) * self.offseason_variance
+        self.form *= self.offseason_retention
+        # Offseason duration is not meaningful game rest, so opening-day rest
+        # contrasts begin neutral for every team.
+        self.last_played.clear()
 
     def _advance_time(self, played_on: date) -> None:
         """Diffuse uncertain team strengths between game dates."""
@@ -127,7 +204,52 @@ class BayesianPlackettLuce:
         adjusted_margin = margin_mean / sqrt(1.0 + pi * margin_variance / 8.0)
         return _sigmoid(adjusted_margin)
 
-    def update(self, home: str, away: str, played_on: date, home_win: bool) -> None:
+    def _update_form(self, home: str, away: str, game: dict) -> None:
+        """Assimilate post-game boxscore sufficient statistics after prediction."""
+
+        required = {
+            f"{side}_{field}"
+            for side in ("home", "away")
+            for field in (
+                "shots", "pp_goals", "pp_opportunities", "pk_goals_against",
+                "times_shorthanded", "shot_attempts",
+            )
+        }
+        if not required <= game.keys():
+            return  # Hand-built callers may use the ranking model without boxscores.
+
+        home_index, away_index = self.index[home], self.index[away]
+        self.form[[home_index, away_index]] *= self.form_decay
+        home_stats = np.array(
+            [
+                game["home_score"], game["away_score"],
+                game["home_shots"], game["away_shots"],
+                game["home_pp_goals"], game["home_pp_opportunities"],
+                game["home_pk_goals_against"], game["home_times_shorthanded"],
+                game["home_shot_attempts"], game["away_shot_attempts"],
+            ],
+            dtype=float,
+        )
+        away_stats = np.array(
+            [
+                home_stats[1], home_stats[0], home_stats[3], home_stats[2],
+                game["away_pp_goals"], game["away_pp_opportunities"],
+                game["away_pk_goals_against"], game["away_times_shorthanded"],
+                home_stats[9], home_stats[8],
+            ],
+            dtype=float,
+        )
+        self.form[home_index] += home_stats
+        self.form[away_index] += away_stats
+
+    def update(
+        self,
+        home: str,
+        away: str,
+        played_on: date,
+        home_win: bool,
+        game: dict | None = None,
+    ) -> None:
         """Assimilate one observed ranking into the Gaussian posterior."""
 
         self._advance_time(played_on)
@@ -152,6 +274,8 @@ class BayesianPlackettLuce:
         self.weekly_residual[self.index[away]] -= residual
         self.last_played[home] = played_on
         self.last_played[away] = played_on
+        if game is not None:
+            self._update_form(home, away, game)
 
 
 def backtest(games: list[dict], **model_options: float) -> tuple[list[dict], dict[str, float]]:
@@ -172,8 +296,12 @@ def backtest(games: list[dict], **model_options: float) -> tuple[list[dict], dic
     # This intentionally plain Elo is a credible sequential baseline, not a
     # tuned competitor: 35 rating points for home ice and K=20 after each game.
     elo: defaultdict[str, float] = defaultdict(lambda: 1500.0)
+    current_season: int | None = None
 
     for row in sorted(games, key=lambda game: (game["start_time_utc"], game["game_id"])):
+        if current_season is not None and row.get("season") != current_season:
+            model.start_new_season()
+        current_season = row.get("season", current_season)
         played_on = date.fromisoformat(row["game_date"])
         probability = model.predict(row["home_team"], row["away_team"], played_on)
         outcome = int(row["home_score"] > row["away_score"])
@@ -203,7 +331,7 @@ def backtest(games: list[dict], **model_options: float) -> tuple[list[dict], dic
             }
         )
         # The result becomes available only after its prediction is recorded.
-        model.update(row["home_team"], row["away_team"], played_on, bool(outcome))
+        model.update(row["home_team"], row["away_team"], played_on, bool(outcome), row)
         home_wins += outcome
         games_seen += 1.0
         elo_change = 20.0 * (outcome - elo_probability)
@@ -220,4 +348,33 @@ def backtest(games: list[dict], **model_options: float) -> tuple[list[dict], dic
         "home_rate_log_loss": float(np.mean(home_rate_losses)),
         "elo_log_loss": float(np.mean(elo_losses)),
     }
+    # Flat per-season keys keep the CLI JSON easy to consume while exposing
+    # regime drift that one aggregate score can hide.
+    if all("season" in row for row in predictions):
+        for season in sorted({row["season"] for row in predictions}):
+            season_rows = [row for row in predictions if row["season"] == season]
+            season_probabilities = np.array(
+                [row["home_win_probability"] for row in season_rows]
+            )
+            season_outcomes = np.array([row["home_win"] for row in season_rows])
+            metrics[f"season_{season}_accuracy"] = float(
+                np.mean((season_probabilities >= 0.5) == season_outcomes)
+            )
+            metrics[f"season_{season}_brier_score"] = float(
+                np.mean((season_probabilities - season_outcomes) ** 2)
+            )
+            metrics[f"season_{season}_log_loss"] = float(
+                np.mean([row["log_loss"] for row in season_rows])
+            )
+            metrics[f"season_{season}_elo_log_loss"] = float(
+                np.mean(
+                    [
+                        -(
+                            row["home_win"] * log(row["elo_probability"])
+                            + (1 - row["home_win"]) * log(1 - row["elo_probability"])
+                        )
+                        for row in season_rows
+                    ]
+                )
+            )
     return predictions, metrics

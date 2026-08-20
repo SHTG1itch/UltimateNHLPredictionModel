@@ -1,42 +1,62 @@
 # Ultimate NHL Prediction Model
 
-A reproducible Python baseline for pre-game NHL win probabilities. The model is
-Bayesian, evaluates every forecast with walk-forward chronology, and uses
-random-matrix theory to suppress finite-sample covariance noise. It is an
-honest baseline, not a claim that a named method is automatically “the most
-accurate”: accuracy is established only by comparisons on unseen future games.
+A reproducible Python model for pre-game NHL win probabilities. It combines a
+sequential Bayesian Plackett-Luce likelihood, strict walk-forward evaluation,
+and random-matrix covariance cleaning. "Most accurate" is treated as a measured
+benchmark outcome, not something guaranteed by naming sophisticated methods.
 
-## What is implemented
+## Statistical model
 
 For home team \(h\) and away team \(a\), the two-item Plackett-Luce likelihood
-is
+(the Bradley-Terry special case) is
 
 \[
-P(h \succ a) = \sigma(s_h - s_a + \beta_{home} + \beta_{rest}\Delta rest).
+P(h \succ a) = \sigma(s_h - s_a + \boldsymbol{\beta}^{T}\mathbf{x}_{ha}).
 \]
 
-The latent team strengths and context coefficients have a Gaussian posterior.
-After each result, a rank-one Laplace update changes its mean and covariance.
-Predictions integrate posterior uncertainty with the logistic-Gaussian
-approximation rather than treating ratings as known constants. Between dates,
-team uncertainty diffuses, allowing strength to move over time.
+The context vector contains home ice, differential rest, and rolling contrasts
+for goal share, shot share, shooting percentage, save percentage, special teams,
+and total-shot-attempt share (SAT/Corsi). Every rolling rate uses conservative
+league-average beta pseudo-counts and exponentially decayed sufficient
+statistics. With decay 0.96, a game's weight halves after approximately 17
+subsequent team games. Current-game statistics never enter its own prediction.
 
-The evaluation is strict expanding-window walk-forward prediction:
+The latent team strengths and context coefficients have a multivariate Gaussian
+posterior. If \(\mathbf{m}\) and \(\mathbf{C}\) are the prior mean and covariance,
+the local logistic curvature is \(w=p(1-p)\), and one online Laplace step uses
+
+\[
+\mathbf{C}' = \mathbf{C} -
+\frac{w(\mathbf{C}\mathbf{x})(\mathbf{C}\mathbf{x})^T}
+{1 + w\mathbf{x}^T\mathbf{C}\mathbf{x}}, \qquad
+\mathbf{m}' = \mathbf{m} + \mathbf{C}'\mathbf{x}(y-p).
+\]
+
+This rank-one Sherman-Morrison form avoids a matrix inverse per game. Posterior
+predictions integrate uncertainty with MacKay's logistic-Gaussian approximation
+\(\sigma(\mu/\sqrt{1+\pi\sigma^2/8})\). Team ratings partially pool 60% toward
+their previous value between seasons, while covariance increases to represent
+roster turnover.
+
+## Walk-forward protocol
+
+Evaluation follows the information order of a live prediction:
 
 1. Sort games by official UTC start time.
-2. Predict game \(t\) using only results before \(t\).
-3. Record the probability and proper scoring rules.
-4. Only then update the posterior with game \(t\).
+2. Predict game \(t\) using only results and boxscores before \(t\).
+3. Record the probability, baselines, and proper scoring rules.
+4. Only then update the posterior and rolling form with game \(t\).
 
-This order prevents future leakage. Accuracy, binary log loss, and Brier score
-are reported; log loss is the primary model-selection metric because it rewards
-well-calibrated probabilities and strongly penalizes unjustified certainty.
+This prevents future leakage. Same-day games use scheduled UTC ordering. Binary
+log loss is the primary selection metric because it rewards calibration and
+penalizes unjustified certainty; Brier score and winner accuracy are also
+reported. The prediction ledger makes every forecast auditable.
 
 ## Marchenko-Pastur and Wigner
 
 Weekly team innovations form an observations-by-teams matrix. Once there are at
 least two observations per team, its correlation eigenvalues are compared with
-the Marchenko-Pastur noise ceiling
+the Marchenko-Pastur null ceiling
 
 \[
 \lambda_+ = (1 + \sqrt{p/n})^2,
@@ -44,14 +64,33 @@ the Marchenko-Pastur noise ceiling
 
 where \(p\) is the number of teams and \(n\) the weekly samples. Eigenvalues in
 the noise bulk are replaced by their mean, preserving trace, while signal modes
-above the ceiling survive. The cleaned positive-definite covariance becomes the
+above the ceiling survive. The positive-definite cleaned covariance becomes the
 correlated diffusion structure for changing team strengths.
 
 Wigner's 1955 semicircle law came from nuclear-physics random matrices, but it
-describes symmetric random matrices—not sample covariance matrices. The code
-reports a Wigner radius as a spectral diagnostic and deliberately does **not**
-mix it into the Marchenko-Pastur covariance cutoff. Marchenko and Pastur's sample
+describes symmetric random matrices, not sample covariance matrices. The code
+reports a Wigner radius as a spectral diagnostic and deliberately does not mix
+it into the Marchenko-Pastur covariance cutoff. Marchenko and Pastur's sample
 covariance result was published in 1967, not 1955.
+
+On the current five-season run, the final 104-week window classifies all 33
+team modes as noise. That is a valid empirical result: the cleaner reduces the
+diffusion toward isotropic noise instead of inventing unsupported correlations.
+If a later window produces eigenvalues above \(\lambda_+\), those modes are
+retained automatically.
+
+## Data pipeline
+
+The downloader gathers completed regular-season and playoff games from the NHL
+web schedule API. It then fetches league-wide per-game `summary`, `powerplay`,
+`penaltykill`, and `realtime` reports from the NHL Stats API. Reports are joined
+by official game ID and home/road orientation, and incomplete joins fail loudly.
+
+The compact CSV contains scores, shots, shot attempts, faceoffs, power-play
+goals/opportunities, and penalty-kill goals allowed/times shorthanded. The API
+calls are season-level rather than one boxscore request per game, which keeps
+downloads fast and storage small. See [data/README.md](data/README.md) for the
+schema and storage policy.
 
 ## Quick start
 
@@ -62,50 +101,67 @@ python -m venv .venv
 .venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]"
 
-nhl-predict download --seasons 20212022 20222023 20232024 20242025
+nhl-predict download --seasons 20212022 20222023 20232024 20242025 20252026
 nhl-predict backtest
-pytest
+python -m pytest
 ```
 
-Downloaded data is ignored by Git. Four modern seasons are only a few hundred
-kilobytes, and the downloader stores one compact CSV rather than large API
-responses. Generated prediction ledgers go under ignored `artifacts/`, keeping
-the repository far below 10 GB.
+Downloaded data is ignored by Git. The downloader stores one compact CSV rather
+than raw API responses, and generated ledgers go under ignored `artifacts/`.
+The complete five-season development workspace is measured during validation
+and remains several orders of magnitude below the hard 10 GB ceiling.
 
-## Output and interpretation
+## Verified benchmark
 
-`nhl-predict backtest` writes every model and baseline probability to
-`artifacts/predictions.csv`. A verified run over 5,599 games from 2021–22
-through 2024–25 produced:
+`nhl-predict backtest` writes model and baseline probabilities to
+`artifacts/predictions.csv`. A verified run over 6,993 games from 2021-22
+through 2025-26 produced:
 
 ```json
 {
-  "accuracy": 0.601893195213431,
-  "brier_score": 0.23659122654549175,
-  "elo_log_loss": 0.6695535207204005,
-  "games": 5599.0,
-  "home_rate_log_loss": 0.6903190771508779,
-  "log_loss": 0.6662372463436382
+  "accuracy": 0.5933075933075933,
+  "brier_score": 0.2360943280633812,
+  "elo_log_loss": 0.6754472619256587,
+  "games": 6993.0,
+  "home_rate_log_loss": 0.6908971193256509,
+  "log_loss": 0.664632348327156
 }
 ```
 
-This expanding-window development run beats the included home-rate and fixed
-Elo baselines on log loss, but it is not a final unbiased performance estimate:
-hyperparameters were not selected on a separate validation period. A final
-claim requires freezing the model, then scoring a later untouched season.
+Season-level results expose drift hidden by the aggregate:
+
+| Season role | Games | Model log loss | Elo log loss | Brier | Accuracy |
+|---|---:|---:|---:|---:|---:|
+| 2021-22 warm-up | 1,401 | 0.66166 | 0.65977 | 0.23419 | 61.67% |
+| 2022-23 validation | 1,400 | 0.66203 | 0.66988 | 0.23490 | 60.00% |
+| 2023-24 validation | 1,400 | 0.65496 | 0.67198 | 0.23157 | 61.21% |
+| 2024-25 parameter holdout | 1,398 | 0.66100 | 0.67660 | 0.23456 | 58.37% |
+| 2025-26 prospective check | 1,394 | 0.68359 | 0.69912 | 0.24528 | 55.38% |
+
+The defaults minimize mean log loss across the 2022-23 and 2023-24 validation
+seasons. The explored grid covered team prior variance 0.5-3.0, context variance
+0.1-3.0, daily diffusion \(10^{-6}\)-\(10^{-3}\), form decay 0.85-0.985,
+offseason retention 0.5-1.0, and offseason variance 0.01-0.4. Those values were
+frozen before the later-season checks under the selected defaults.
+
+The model beats Elo on probability quality in every post-warm-up season, but
+2024-25 winner accuracy is slightly lower than Elo. Log loss remains the model
+selection objective because changing a classification threshold to chase one
+season's hit rate would not improve the probability forecast.
 
 ## Reproducibility and limitations
 
-- The source is the public NHL web API. The endpoint is public but its schema is
-  not versioned; validation fails loudly when required CSV fields disappear.
-- Same-day games are ordered by scheduled UTC time. Each result is learned only
-  after that game's prediction.
-- The current features are team strength, home ice, and capped rest advantage.
-  Starting goalies, injuries, travel, shots/xG, special teams, and market odds
-  are not yet present. They should be added only with timestamped, historically
-  available data so the backtest cannot see information unavailable pre-game.
-- “Most accurate” is a benchmark outcome, not an architectural property. Model
-  changes belong behind later-season comparisons against fixed baselines.
+- Schedules/results come from `api-web.nhle.com`; per-game reports come from
+  `api.nhle.com/stats/rest`. The public schemas are not versioned, so validation
+  fails instead of silently imputing missing values.
+- Hyperparameters are fixed defaults in `BayesianPlackettLuce`; the benchmark
+  command requires no hidden notebook or private configuration.
+- Current rolling features include scores, shots, SAT, rest, and special teams.
+  Starting goalies, injuries, travel distance, shot-level expected goals,
+  confirmed lineups, and market odds are not yet present. They require
+  timestamped historical snapshots; final rosters or later revisions leak.
+- "Most accurate" remains a benchmark target. Every model change must beat
+  fixed baselines on later seasons rather than only fitting historical games.
 
 ## Research basis
 
@@ -120,5 +176,8 @@ claim requires freezing the model, then scoring a later untouched season.
 - [Wigner (1955), *Characteristic vectors of bordered matrices with infinite
   dimensions*](https://doi.org/10.2307/1970079): the nuclear-physics
   random-matrix lineage and semicircle law.
-- Forward validation preserves temporal order; the implementation makes that
-  constraint explicit by logging each forecast before its posterior update.
+- [Macdonald (2012), *Evaluating NHL Goalies, Skaters, and Teams Using Weighted
+  Shots*](https://arxiv.org/abs/1205.1746): shot quality, goaltending, and team
+  evaluation motivate the rolling shot/finishing/save decomposition.
+- Forward validation preserves temporal order; this implementation enforces it
+  by writing each forecast before updating any posterior or form statistic.

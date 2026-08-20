@@ -26,6 +26,7 @@ def test_backtest_predicts_before_learning_result() -> None:
     games = [
         {
             "game_id": i,
+            "season": 20242025,
             "start_time_utc": f"2025-01-{i:02d}T00:00:00Z",
             "game_date": f"2025-01-{i:02d}",
             "home_team": "A",
@@ -40,6 +41,7 @@ def test_backtest_predicts_before_learning_result() -> None:
     assert predictions[-1]["home_win_probability"] > predictions[1]["home_win_probability"]
     assert metrics["games"] == 4
     assert set(("home_rate_log_loss", "elo_log_loss")) <= metrics.keys()
+    assert "season_20242025_log_loss" in metrics
 
 
 def test_mp_cleaner_is_positive_definite_and_detects_signal() -> None:
@@ -75,3 +77,31 @@ def test_enriched_game_csv_is_typed(tmp_path) -> None:
     parsed = read_games(path)[0]
     assert isinstance(parsed["game_id"], int)
     assert all(isinstance(parsed[field], float) for field in TEAM_STAT_FIELDS)
+
+
+def test_current_boxscore_enters_form_only_after_update() -> None:
+    model = BayesianPlackettLuce(["A", "B"])
+    played_on = date(2025, 1, 1)
+    before = model.form.copy()
+    model.predict("A", "B", played_on)
+    assert np.array_equal(model.form, before)
+
+    game = {
+        "home_score": 4,
+        "away_score": 2,
+        "home_shots": 35,
+        "away_shots": 25,
+        "home_pp_goals": 1,
+        "home_pp_opportunities": 3,
+        "home_pk_goals_against": 0,
+        "home_times_shorthanded": 2,
+        "home_shot_attempts": 65,
+        "away_pp_goals": 0,
+        "away_pp_opportunities": 2,
+        "away_pk_goals_against": 1,
+        "away_times_shorthanded": 3,
+        "away_shot_attempts": 50,
+    }
+    model.update("A", "B", played_on, True, game)
+    assert model.form[model.index["A"], 0] == 4
+    assert model.form[model.index["B"], 0] == 2
