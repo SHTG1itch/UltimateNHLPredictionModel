@@ -262,7 +262,7 @@ class BayesianPlackettLuce:
                 0.0,
                 1.0
                 - self.james_stein_scale
-                * (self.team_count - 3)
+                * (self.team_count - 2)
                 * pooled_variance
                 / max(squared_signal, 1e-12),
             )
