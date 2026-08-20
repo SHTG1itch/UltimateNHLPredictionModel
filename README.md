@@ -84,11 +84,14 @@ reports a Wigner radius as a spectral diagnostic and deliberately does not mix
 it into the Marchenko-Pastur covariance cutoff. Marchenko and Pastur's sample
 covariance result was published in 1967, not 1955.
 
-On the current five-season run, the final 104-week window classifies all 33
-team modes as noise. That is a valid empirical result: the cleaner reduces the
-diffusion toward isotropic noise instead of inventing unsupported correlations.
-If a later window produces eigenvalues above \(\lambda_+\), those modes are
-retained automatically.
+On the current five-season run, the final 104-week window classifies 32 of 33
+team modes as noise and retains one signal mode above \(\lambda_+=2.4439\).
+The cleaner therefore suppresses the bulk without discarding the supported
+cross-team direction; later windows are classified again from their own data.
+
+The CLI reports `mp_upper_edge`, `mp_noise_eigenvalues`,
+`mp_signal_eigenvalues`, and `wigner_radius` from the final window, making this
+decision auditable for every new data refresh.
 
 ## Data pipeline
 
@@ -152,7 +155,9 @@ through 2025-26 produced:
   "elo_log_loss": 0.6754472619256587,
   "games": 6993.0,
   "home_rate_log_loss": 0.6908971193256509,
-  "log_loss": 0.6642990021795636
+  "log_loss": 0.6642990021795636,
+  "mp_noise_eigenvalues": 32.0,
+  "mp_signal_eigenvalues": 1.0
 }
 ```
 

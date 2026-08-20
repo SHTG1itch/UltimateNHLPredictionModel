@@ -415,6 +415,16 @@ def backtest(games: list[dict], **model_options: float) -> tuple[list[dict], dic
         "home_rate_log_loss": float(np.mean(home_rate_losses)),
         "elo_log_loss": float(np.mean(elo_losses)),
     }
+    if model.spectral_diagnostics is not None:
+        spectral = model.spectral_diagnostics
+        metrics.update(
+            {
+                "mp_upper_edge": spectral.mp_upper_edge,
+                "mp_noise_eigenvalues": float(spectral.noise_eigenvalues),
+                "mp_signal_eigenvalues": float(spectral.signal_eigenvalues),
+                "wigner_radius": spectral.wigner_radius,
+            }
+        )
     # Flat per-season keys keep the CLI JSON easy to consume while exposing
     # regime drift that one aggregate score can hide.
     if all("season" in row for row in predictions):

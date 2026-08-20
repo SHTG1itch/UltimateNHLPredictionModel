@@ -77,6 +77,24 @@ def test_mp_cleaner_is_positive_definite_and_detects_signal() -> None:
     assert diagnostics.noise_eigenvalues + diagnostics.signal_eigenvalues == 8
 
 
+def test_backtest_exposes_spectral_diagnostics_after_enough_weeks() -> None:
+    games = [
+        {
+            "game_id": offset,
+            "season": 20242025,
+            "start_time_utc": f"2025-01-{1 + 7 * offset:02d}T00:00:00Z",
+            "game_date": f"2025-01-{1 + 7 * offset:02d}",
+            "home_team": "A",
+            "away_team": "B",
+            "home_score": 3,
+            "away_score": 2,
+        }
+        for offset in range(5)
+    ]
+    _, metrics = backtest(games)
+    assert metrics["mp_noise_eigenvalues"] + metrics["mp_signal_eigenvalues"] == 2
+
+
 def test_enriched_game_csv_is_typed(tmp_path) -> None:
     path = tmp_path / "games.csv"
     row = {field: 0 for field in FIELDS}
