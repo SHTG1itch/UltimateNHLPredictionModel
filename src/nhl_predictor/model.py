@@ -431,19 +431,13 @@ class BayesianModelAverage:
             BayesianPlackettLuce(teams, **(specification | model_options))
             for specification in specifications
         ]
-        self.log_weights = np.log([0.54, 0.46])
+        self.weights = np.array([0.54, 0.46])
 
     @property
     def spectral_diagnostics(self) -> SpectralDiagnostics | None:
         """Expose the first member's identically scheduled spectral audit."""
 
         return self.members[0].spectral_diagnostics
-
-    @property
-    def weights(self) -> NDArray[np.float64]:
-        """Return normalized posterior model probabilities."""
-
-        return np.exp(self.log_weights)
 
     def start_new_season(self) -> None:
         """Apply the same offseason transition to every candidate model."""
