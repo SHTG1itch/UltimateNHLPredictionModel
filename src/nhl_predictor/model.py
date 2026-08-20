@@ -361,7 +361,9 @@ class BayesianPlackettLuce:
         observation_weight = (
             self.overtime_weight if game is not None and game.get("overtime") else 1.0
         )
-        if game is not None:
+        if game is not None and self.margin_scale and {
+            "home_score", "away_score"
+        } <= game.keys():
             observation_weight *= 1.0 + self.margin_scale * log(
                 max(abs(game["home_score"] - game["away_score"]), 1)
             )
