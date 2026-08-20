@@ -41,6 +41,20 @@ def test_overtime_result_has_smaller_posterior_update() -> None:
     assert regulation.mean[regulation.index["A"]] > overtime.mean[overtime.index["A"]]
 
 
+def test_positive_part_james_stein_shrinks_team_signal() -> None:
+    shrunk = BayesianPlackettLuce(["A", "B", "C", "D"], james_stein_scale=1.0)
+    raw = BayesianPlackettLuce(["A", "B", "C", "D"])
+    played_on = date(2025, 1, 1)
+    for model in (shrunk, raw):
+        model.mean[model.index["A"]] = 0.5
+        model.mean[model.index["B"]] = -0.5
+    shrunk_details = shrunk.predict_details("A", "B", played_on)
+    raw_details = raw.predict_details("A", "B", played_on)
+    assert shrunk_details["james_stein_factor"] == 0.0
+    assert raw_details["james_stein_factor"] == 1.0
+    assert shrunk_details["home_win_probability"] < raw_details["home_win_probability"]
+
+
 def test_backtest_predicts_before_learning_result() -> None:
     games = [
         {

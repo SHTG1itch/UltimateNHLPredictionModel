@@ -67,6 +67,7 @@ class BayesianPlackettLuce:
         offseason_variance: float = 0.025,
         form_features: tuple[str, ...] = DEFAULT_FORM_FEATURES,
         overtime_weight: float = 0.70,
+        james_stein_scale: float = 0.0,
     ) -> None:
         unique_teams = sorted(set(teams))
         if len(unique_teams) < 2:
@@ -82,6 +83,8 @@ class BayesianPlackettLuce:
             raise ValueError("decay and retention must be probabilities")
         if not 0.0 < overtime_weight <= 1.0:
             raise ValueError("overtime_weight must be in (0, 1]")
+        if james_stein_scale < 0.0:
+            raise ValueError("james_stein_scale cannot be negative")
         if not form_features or len(set(form_features)) != len(form_features):
             raise ValueError("form_features must contain unique feature names")
         unknown_features = set(form_features) - set(FORM_FEATURES)
@@ -109,6 +112,7 @@ class BayesianPlackettLuce:
         self.offseason_retention = offseason_retention
         self.offseason_variance = offseason_variance
         self.overtime_weight = overtime_weight
+        self.james_stein_scale = james_stein_scale
         # Columns hold GF, GA, SF, SA, PP goals/opportunities, PP goals allowed,
         # times shorthanded, shot attempts for/against, xGF/xGA, and goals
         # for/against in xG-covered games. They are decayed sufficient stats.
@@ -238,7 +242,28 @@ class BayesianPlackettLuce:
         self._advance_time(played_on)
         self._roll_week(played_on)
         features = self._features(home, away, played_on)
-        margin_mean = float(features @ self.mean)
+        team_mean = self.mean[: self.team_count]
+        squared_signal = float(team_mean @ team_mean)
+        pooled_variance = float(np.trace(
+            self.covariance[: self.team_count, : self.team_count]
+        )) / self.team_count
+        # Positive-part James-Stein estimator for p >= 3 team effects. Scaling
+        # zero cleanly disables it for the validation ablation.
+        james_stein_factor = (
+            max(
+                0.0,
+                1.0
+                - self.james_stein_scale
+                * (self.team_count - 3)
+                * pooled_variance
+                / max(squared_signal, 1e-12),
+            )
+            if self.team_count >= 3
+            else 1.0
+        )
+        margin_mean = float(features @ self.mean) + (james_stein_factor - 1.0) * (
+            team_mean[self.index[home]] - team_mean[self.index[away]]
+        )
         margin_variance = max(float(features @ self.covariance @ features), 0.0)
         margin_sd = sqrt(margin_variance)
         # MacKay's logistic-Gaussian approximation integrates parameter
@@ -250,6 +275,7 @@ class BayesianPlackettLuce:
             "home_win_probability": _sigmoid(adjusted_margin),
             "latent_margin_mean": margin_mean,
             "latent_margin_sd": margin_sd,
+            "james_stein_factor": james_stein_factor,
             "home_win_epistemic_lower": _sigmoid(margin_mean - 1.96 * margin_sd),
             "home_win_epistemic_upper": _sigmoid(margin_mean + 1.96 * margin_sd),
         }
