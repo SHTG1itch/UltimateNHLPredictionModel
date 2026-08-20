@@ -58,7 +58,7 @@ class BayesianPlackettLuce:
         self,
         teams: Iterable[str],
         *,
-        team_prior_variance: float = 1.0,
+        team_prior_variance: float = 0.20,
         context_prior_variance: float = 1.0,
         daily_process_variance: float = 0.00001,
         covariance_window_weeks: int = 104,
