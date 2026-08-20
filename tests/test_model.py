@@ -55,6 +55,11 @@ def test_backtest_predicts_before_learning_result() -> None:
     ]
     predictions, metrics = backtest(games)
     assert predictions[0]["home_win_probability"] == 0.5
+    assert (
+        predictions[0]["home_win_epistemic_lower"]
+        < predictions[0]["home_win_probability"]
+        < predictions[0]["home_win_epistemic_upper"]
+    )
     assert predictions[-1]["home_win_probability"] > predictions[1]["home_win_probability"]
     assert metrics["games"] == 4
     assert set(("home_rate_log_loss", "elo_log_loss")) <= metrics.keys()

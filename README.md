@@ -38,6 +38,12 @@ predictions integrate uncertainty with MacKay's logistic-Gaussian approximation
 their previous value between seasons, while covariance increases to represent
 roster turnover.
 
+Every ledger row also reports the latent log-odds margin mean and standard
+deviation. The 95% epistemic bounds are
+\(\sigma(\mu-1.96\sigma_m)\) and \(\sigma(\mu+1.96\sigma_m)\). These describe
+parameter uncertainty in the underlying win propensity, not a confidence
+interval for the binary outcome of one inherently random game.
+
 Overtime and shootout results use a 0.70 power likelihood: both still count as
 wins for the moneyline target, but their score curvature and residual update
 are multiplied by 0.70 because they are near-ties. The weight was selected on
@@ -122,10 +128,11 @@ and remains several orders of magnitude below the hard 10 GB ceiling.
 
 `nhl-predict predict` fits the posterior to every completed row in
 `data/games.csv`, downloads one exact NHL schedule date, prints home-win
-probabilities, and writes `artifacts/forecast.csv`. It rejects any schedule at
-or before the latest training result, preventing an accidental historical
-forecast from using future games. An unpublished or game-free date returns an
-empty prediction list without creating a misleading artifact.
+probabilities, latent margin uncertainty, and 95% epistemic bounds, then writes
+`artifacts/forecast.csv`. It rejects any schedule at or before the latest
+training result, preventing an accidental historical forecast from using future
+games. An unpublished or game-free date returns an empty prediction list
+without creating a misleading artifact.
 
 The command predicts regular-season and playoff games only. New teams present
 in a future schedule receive the same zero-centered prior as every other unseen

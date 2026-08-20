@@ -232,18 +232,32 @@ class BayesianPlackettLuce:
         mean_variance = float(np.diag(cleaned).mean())
         self.diffusion = cleaned * (self.daily_process_variance / max(mean_variance, 1e-12))
 
-    def predict(self, home: str, away: str, played_on: date) -> float:
-        """Return posterior predictive probability that the home team wins."""
+    def predict_details(self, home: str, away: str, played_on: date) -> dict[str, float]:
+        """Return win probability and posterior uncertainty for one matchup."""
 
         self._advance_time(played_on)
         self._roll_week(played_on)
         features = self._features(home, away, played_on)
         margin_mean = float(features @ self.mean)
         margin_variance = max(float(features @ self.covariance @ features), 0.0)
+        margin_sd = sqrt(margin_variance)
         # MacKay's logistic-Gaussian approximation integrates parameter
         # uncertainty instead of pretending the posterior mean is exact.
         adjusted_margin = margin_mean / sqrt(1.0 + pi * margin_variance / 8.0)
-        return _sigmoid(adjusted_margin)
+        # Transforming Gaussian margin quantiles gives an epistemic interval for
+        # the underlying win propensity. It is not a frequentist game-outcome CI.
+        return {
+            "home_win_probability": _sigmoid(adjusted_margin),
+            "latent_margin_mean": margin_mean,
+            "latent_margin_sd": margin_sd,
+            "home_win_epistemic_lower": _sigmoid(margin_mean - 1.96 * margin_sd),
+            "home_win_epistemic_upper": _sigmoid(margin_mean + 1.96 * margin_sd),
+        }
+
+    def predict(self, home: str, away: str, played_on: date) -> float:
+        """Return posterior predictive probability that the home team wins."""
+
+        return self.predict_details(home, away, played_on)["home_win_probability"]
 
     def _update_form(self, home: str, away: str, game: dict) -> None:
         """Assimilate post-game boxscore sufficient statistics after prediction."""
@@ -355,7 +369,8 @@ def backtest(games: list[dict], **model_options: float) -> tuple[list[dict], dic
             model.start_new_season()
         current_season = row.get("season", current_season)
         played_on = date.fromisoformat(row["game_date"])
-        probability = model.predict(row["home_team"], row["away_team"], played_on)
+        details = model.predict_details(row["home_team"], row["away_team"], played_on)
+        probability = details["home_win_probability"]
         outcome = int(row["home_score"] > row["away_score"])
         home_rate_probability = home_wins / games_seen
         elo_probability = 1.0 / (
@@ -375,7 +390,7 @@ def backtest(games: list[dict], **model_options: float) -> tuple[list[dict], dic
         predictions.append(
             {
                 **row,
-                "home_win_probability": probability,
+                **details,
                 "home_rate_probability": home_rate_probability,
                 "elo_probability": elo_probability,
                 "home_win": outcome,
@@ -478,8 +493,8 @@ def forecast(games: list[dict], schedule: list[dict], **model_options: float) ->
         if current_season is not None and row.get("season") != current_season:
             model.start_new_season()
         current_season = row.get("season", current_season)
-        probability = model.predict(
+        details = model.predict_details(
             row["home_team"], row["away_team"], date.fromisoformat(row["game_date"])
         )
-        predictions.append({**row, "home_win_probability": probability})
+        predictions.append({**row, **details})
     return predictions
