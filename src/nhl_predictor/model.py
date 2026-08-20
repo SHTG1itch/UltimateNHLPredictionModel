@@ -404,9 +404,10 @@ class BayesianModelAverage:
         specifications = (
             {
                 "form_features": ("xg_share", "shot_share", "sat_share"),
+                "form_decay": 0.94,
             },
             {
-                "form_decay": 0.92,
+                "form_decay": 0.70,
                 "james_stein_scale": 0.05,
                 "overtime_credit": 0.90,
                 "margin_scale": 0.20,
