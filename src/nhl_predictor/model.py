@@ -68,6 +68,7 @@ class BayesianPlackettLuce:
         form_features: tuple[str, ...] = DEFAULT_FORM_FEATURES,
         overtime_weight: float = 0.70,
         overtime_credit: float = 1.0,
+        margin_scale: float = 0.0,
         james_stein_scale: float = 0.0,
     ) -> None:
         unique_teams = sorted(set(teams))
@@ -86,6 +87,8 @@ class BayesianPlackettLuce:
             raise ValueError("overtime_weight must be in (0, 1]")
         if not 0.5 <= overtime_credit <= 1.0:
             raise ValueError("overtime_credit must be in [0.5, 1]")
+        if margin_scale < 0.0:
+            raise ValueError("margin_scale cannot be negative")
         if james_stein_scale < 0.0:
             raise ValueError("james_stein_scale cannot be negative")
         if not form_features or len(set(form_features)) != len(form_features):
@@ -116,6 +119,7 @@ class BayesianPlackettLuce:
         self.offseason_variance = offseason_variance
         self.overtime_weight = overtime_weight
         self.overtime_credit = overtime_credit
+        self.margin_scale = margin_scale
         self.james_stein_scale = james_stein_scale
         # Columns hold GF, GA, SF, SA, PP goals/opportunities, PP goals allowed,
         # times shorthanded, shot attempts for/against, xGF/xGA, and goals
@@ -357,6 +361,10 @@ class BayesianPlackettLuce:
         observation_weight = (
             self.overtime_weight if game is not None and game.get("overtime") else 1.0
         )
+        if game is not None:
+            observation_weight *= 1.0 + self.margin_scale * log(
+                max(abs(game["home_score"] - game["away_score"]), 1)
+            )
         curvature = max(observation_weight * probability * (1.0 - probability), 1e-9)
 
         # Sherman-Morrison applies the rank-one Hessian update without a costly
@@ -399,6 +407,7 @@ class BayesianModelAverage:
                 "form_decay": 0.92,
                 "james_stein_scale": 0.05,
                 "overtime_credit": 0.90,
+                "margin_scale": 0.20,
             },
         )
         self.names = ("possession", "fast_james_stein")

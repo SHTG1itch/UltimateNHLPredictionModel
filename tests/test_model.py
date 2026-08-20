@@ -47,6 +47,16 @@ def test_overtime_result_has_smaller_posterior_update() -> None:
     )
 
 
+def test_log_margin_power_gives_a_blowout_more_evidence() -> None:
+    ordinary = BayesianPlackettLuce(["A", "B"])
+    margin_aware = BayesianPlackettLuce(["A", "B"], margin_scale=0.2)
+    game = {"overtime": 0, "home_score": 5, "away_score": 1}
+    played_on = date(2025, 1, 1)
+    ordinary.update("A", "B", played_on, True, game)
+    margin_aware.update("A", "B", played_on, True, game)
+    assert margin_aware.mean[margin_aware.index["A"]] > ordinary.mean[ordinary.index["A"]]
+
+
 def test_positive_part_james_stein_shrinks_team_signal() -> None:
     shrunk = BayesianPlackettLuce(["A", "B", "C", "D"], james_stein_scale=1.0)
     raw = BayesianPlackettLuce(["A", "B", "C", "D"])
