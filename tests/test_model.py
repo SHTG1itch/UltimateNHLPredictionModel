@@ -16,7 +16,7 @@ from nhl_predictor.data import (
     read_games,
 )
 from nhl_predictor.cli import _file_metadata
-from nhl_predictor.model import BayesianModelAverage, BayesianPlackettLuce, backtest, forecast
+from nhl_predictor.model import BayesianModelAverage, BayesianPlackettLuce, backtest, fit, forecast
 from nhl_predictor.random_matrix import clean_covariance
 
 
@@ -292,3 +292,20 @@ def test_forecast_rejects_historical_schedule() -> None:
     ]
     with np.testing.assert_raises_regex(ValueError, "after every training result"):
         forecast(history, schedule)
+
+
+def test_utah_inherits_arizona_history() -> None:
+    history = [
+        {
+            "game_id": 1,
+            "season": 20232024,
+            "game_date": "2024-04-01",
+            "start_time_utc": "2024-04-01T00:00:00Z",
+            "home_team": "ARI",
+            "away_team": "B",
+            "home_score": 3,
+            "away_score": 2,
+        }
+    ]
+    model, _ = fit(history, extra_teams=("UTA",), model_average=False)
+    assert "UTA" in model.index and "ARI" not in model.index

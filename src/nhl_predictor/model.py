@@ -31,6 +31,13 @@ DEFAULT_FORM_FEATURES = (
     "xg_finishing",
     "xg_saving",
 )
+TEAM_ALIASES = {"ARI": "UTA"}
+
+
+def _franchise(team: str) -> str:
+    """Keep inherited hockey history under the active team abbreviation."""
+
+    return TEAM_ALIASES.get(team, team)
 
 
 def _sigmoid(value: float) -> float:
@@ -531,7 +538,7 @@ def backtest(
 
     if not games:
         raise ValueError("games cannot be empty")
-    teams = {row[side] for row in games for side in ("home_team", "away_team")}
+    teams = {_franchise(row[side]) for row in games for side in ("home_team", "away_team")}
     model = (
         BayesianModelAverage(teams, **model_options)
         if model_average
@@ -555,14 +562,15 @@ def backtest(
             model.start_new_season()
         current_season = row.get("season", current_season)
         played_on = date.fromisoformat(row["game_date"])
-        details = model.predict_details(row["home_team"], row["away_team"], played_on)
+        home, away = _franchise(row["home_team"]), _franchise(row["away_team"])
+        details = model.predict_details(home, away, played_on)
         probability = details["home_win_probability"]
         outcome = int(row["home_score"] > row["away_score"])
         home_rate_probability = home_wins / games_seen
         elo_probability = 1.0 / (
             1.0
             + 10.0
-            ** ((elo[row["away_team"]] - elo[row["home_team"]] - 35.0) / 400.0)
+            ** ((elo[away] - elo[home] - 35.0) / 400.0)
         )
         clipped = min(max(probability, 1e-12), 1.0 - 1e-12)
         losses.append(-(outcome * log(clipped) + (1 - outcome) * log(1 - clipped)))
@@ -584,12 +592,12 @@ def backtest(
             }
         )
         # The result becomes available only after its prediction is recorded.
-        model.update(row["home_team"], row["away_team"], played_on, bool(outcome), row)
+        model.update(home, away, played_on, bool(outcome), row)
         home_wins += outcome
         games_seen += 1.0
         elo_change = 20.0 * (outcome - elo_probability)
-        elo[row["home_team"]] += elo_change
-        elo[row["away_team"]] -= elo_change
+        elo[home] += elo_change
+        elo[away] -= elo_change
 
     probabilities = np.array([row["home_win_probability"] for row in predictions])
     outcomes = np.array([row["home_win"] for row in predictions])
@@ -659,11 +667,11 @@ def fit(
 
     if not games:
         raise ValueError("games cannot be empty")
-    teams = {row[side] for row in games for side in ("home_team", "away_team")}
+    teams = {_franchise(row[side]) for row in games for side in ("home_team", "away_team")}
     model = (
-        BayesianModelAverage(teams | set(extra_teams), **model_options)
+        BayesianModelAverage(teams | {_franchise(team) for team in extra_teams}, **model_options)
         if model_average
-        else BayesianPlackettLuce(teams | set(extra_teams), **model_options)
+        else BayesianPlackettLuce(teams | {_franchise(team) for team in extra_teams}, **model_options)
     )
     current_season: int | None = None
     for row in sorted(games, key=lambda game: (game["start_time_utc"], game["game_id"])):
@@ -672,8 +680,8 @@ def fit(
         current_season = row.get("season", current_season)
         played_on = date.fromisoformat(row["game_date"])
         model.update(
-            row["home_team"],
-            row["away_team"],
+            _franchise(row["home_team"]),
+            _franchise(row["away_team"]),
             played_on,
             row["home_score"] > row["away_score"],
             row,
@@ -697,7 +705,7 @@ def forecast(
         raise ValueError("scheduled games must occur after every training result")
 
     scheduled_teams = {
-        row[side] for row in schedule for side in ("home_team", "away_team")
+        _franchise(row[side]) for row in schedule for side in ("home_team", "away_team")
     }
     model, current_season = fit(
         games,
@@ -711,7 +719,9 @@ def forecast(
             model.start_new_season()
         current_season = row.get("season", current_season)
         details = model.predict_details(
-            row["home_team"], row["away_team"], date.fromisoformat(row["game_date"])
+            _franchise(row["home_team"]),
+            _franchise(row["away_team"]),
+            date.fromisoformat(row["game_date"]),
         )
         predictions.append({**row, **details})
     return predictions
