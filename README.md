@@ -64,8 +64,8 @@ feature horizon is certainly correct:
 
 1. `possession` uses xG share, shot share, and SAT share with 0.94 form decay,
    a half-life of about 11 team games.
-2. `fast_james_stein` uses the full six-feature context with 0.70 form decay,
-   a half-life of about two team games, tempered James-Stein team effects, and
+2. `fast_james_stein` uses the full six-feature context with 0.80 form decay,
+   a half-life of about three team games, tempered James-Stein team effects, and
    conservative score-margin evidence.
 
 For the second member, let \(p\) be the number of teams, \(\mathbf{s}\) their
@@ -88,8 +88,8 @@ it remains an audited rejection rather than being retained for its name.
 Let \(p_{k,t}\) be member \(k\)'s pre-game probability. The reported forecast is
 
 \[
-\hat p_t=0.54p_{\mathrm{possession},t}
-+0.46p_{\mathrm{fast},t}.
+\hat p_t=0.55p_{\mathrm{possession},t}
++0.45p_{\mathrm{fast},t}.
 \]
 
 The fixed validation blend beat discounted per-game weight updates on both the
@@ -119,7 +119,10 @@ averaging to protect forecasts when margin is misleading.
 
 ## Walk-forward protocol
 
-Evaluation follows the information order of a live prediction:
+The 2019-20 and 2020-21 seasons are unscored warm-up history. They initialize
+the sequential state before the fixed five-season evaluation window; they are
+never included in its metrics. Evaluation then follows the information order
+of a live prediction:
 
 1. Sort games by official UTC start time.
 2. Predict game \(t\) using only results and boxscores before \(t\).
@@ -153,8 +156,9 @@ reports a Wigner radius as a spectral diagnostic and deliberately does not mix
 it into the Marchenko-Pastur covariance cutoff. Marchenko and Pastur's sample
 covariance result was published in 1967, not 1955.
 
-On the current five-season run, the final 104-week window classifies 32 of 33
-team modes as noise and retains one signal mode above \(\lambda_+=2.4439\).
+On the current seven-season training run, the final 104-week window classifies
+31 of 32 team modes as noise and retains one signal mode above
+\(\lambda_+=2.4171\).
 The cleaner therefore suppresses the bulk without discarding the supported
 cross-team direction; later windows are classified again from their own data.
 
@@ -185,15 +189,15 @@ python -m venv .venv
 .venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]"
 
-nhl-predict download --seasons 20212022 20222023 20232024 20242025 20252026
-nhl-predict backtest
+nhl-predict download --seasons 20192020 20202021 20212022 20222023 20232024 20242025 20252026
+nhl-predict backtest --evaluate-from 20212022
 nhl-predict predict --date 2026-10-10
 python -m pytest
 ```
 
 Downloaded data is ignored by Git. The downloader stores one compact CSV rather
 than raw API responses, and generated ledgers go under ignored `artifacts/`.
-The complete five-season development workspace is measured during validation
+The complete seven-season development workspace is measured during validation
 and remains several orders of magnitude below the hard 10 GB ceiling.
 The download command prints the exact CSV byte size and SHA-256 digest so a
 benchmark can be tied to the data bytes that produced it.
@@ -215,22 +219,23 @@ they do not pretend that unrecorded starting-goalie or lineup news is known.
 
 ## Verified benchmark
 
-`nhl-predict backtest` writes model and baseline probabilities to
-`artifacts/predictions.csv`. A verified run over 6,993 games from 2021-22
-through 2025-26 used a 1,455,248-byte `data/games.csv` with SHA-256
-`1595aabe4098c707a6cee8ebe571eca44e31f2bb8f8803d64794a4af0d865139` and
+`nhl-predict backtest --evaluate-from 20212022` writes model and baseline
+probabilities to `artifacts/predictions.csv`. A verified run trained on 9,157
+games from 2019-20 through 2025-26 and scored the final 6,993 games. It used a
+1,900,396-byte `data/games.csv` with SHA-256
+`a5150384d8c3d60f3bb71cc4dd5fd84119b288608093dd1e167fa8d7cc430da4` and
 produced:
 
 ```json
 {
-  "accuracy": 0.6016016016016016,
-  "brier_score": 0.2339604992513371,
-  "elo_log_loss": 0.6754377751471742,
-  "final_fast_james_stein_weight": 0.46,
-  "final_possession_weight": 0.54,
+  "accuracy": 0.6021736021736022,
+  "brier_score": 0.23322995648123016,
+  "elo_log_loss": 0.6748934351602023,
+  "final_fast_james_stein_weight": 0.45,
+  "final_possession_weight": 0.55,
   "games": 6993.0,
-  "home_rate_log_loss": 0.6908971193256509,
-  "log_loss": 0.659890343162455,
+  "home_rate_log_loss": 0.6906025254572833,
+  "log_loss": 0.6583178286894047,
   "mp_noise_eigenvalues": 31.0,
   "mp_signal_eigenvalues": 1.0
 }
@@ -240,17 +245,17 @@ Season-level results expose drift hidden by the aggregate:
 
 | Season role | Games | Model log loss | Elo log loss | Brier | Accuracy |
 |---|---:|---:|---:|---:|---:|
-| 2021-22 warm-up | 1,401 | 0.65079 | 0.65977 | 0.22933 | 63.10% |
-| 2022-23 validation | 1,400 | 0.65778 | 0.66988 | 0.23295 | 61.14% |
-| 2023-24 validation | 1,400 | 0.65366 | 0.67198 | 0.23100 | 61.93% |
-| 2024-25 parameter holdout | 1,398 | 0.65673 | 0.67656 | 0.23263 | 59.94% |
-| 2025-26 prospective check | 1,394 | 0.68058 | 0.69912 | 0.24393 | 54.66% |
+| 2021-22 evaluation | 1,401 | 0.64381 | 0.65655 | 0.22611 | 63.45% |
+| 2022-23 validation | 1,400 | 0.65736 | 0.67030 | 0.23273 | 61.00% |
+| 2023-24 validation | 1,400 | 0.65359 | 0.67205 | 0.23098 | 61.43% |
+| 2024-25 parameter holdout | 1,398 | 0.65658 | 0.67657 | 0.23255 | 60.44% |
+| 2025-26 prospective check | 1,394 | 0.68035 | 0.69912 | 0.24382 | 54.73% |
 
 Every season's log loss improves over the preceding model-averaged benchmark.
-Across all games, log loss falls from 0.663269 to 0.659890, Brier score falls
-from 0.235414 to 0.233960, and accuracy rises from 59.70% to 60.16% (32
-additional correct winners). The latest changes alone add 12 correct winners
-over the prior 0.660047 benchmark.
+Across all scored games, log loss falls from 0.663269 to 0.658318, Brier score
+falls from 0.235414 to 0.233230, and accuracy rises from 59.70% to 60.22%.
+The historical warm-up and retuning add four correct winners over the preceding
+0.659890 benchmark while improving every season's log loss.
 
 The defaults improve mean log loss across the 2022-23 and 2023-24 validation
 seasons while requiring later-season robustness and no aggregate accuracy loss.
@@ -284,7 +289,8 @@ selection score and reported the next two seasons separately:
 | Previous ensemble retuning | 0.655805 | 0.668858 | 0.660047 | Retain |
 | Arizona/Utah continuity | 0.655792 | 0.668756 | 0.660000 | Retain |
 | Fixed 54/46 robust blend | 0.655770 | 0.668753 | 0.659962 | Retain |
-| Margin/shrinkage retuning | **0.655722** | **0.668655** | **0.659890** | Retain |
+| Margin/shrinkage retuning | 0.655722 | 0.668655 | 0.659890 | Retain |
+| Two-season warm-up + 55/45 blend | **0.655477** | **0.668463** | **0.658318** | Retain |
 
 Fixed temperature/intercept scaling, a separate online Bayesian logit
 calibrator, faceoff and starter-save form, separate fatigue coefficients,
