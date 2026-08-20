@@ -370,13 +370,142 @@ class BayesianPlackettLuce:
             self._update_form(home, away, game)
 
 
-def backtest(games: list[dict], **model_options: float) -> tuple[list[dict], dict[str, float]]:
+class BayesianModelAverage:
+    """Online Bayesian average of two validation-selected PL specifications."""
+
+    def __init__(
+        self,
+        teams: Iterable[str],
+        *,
+        forgetting: float = 0.99,
+        likelihood_power: float = 0.25,
+        **model_options: float,
+    ) -> None:
+        if not 0.0 < forgetting <= 1.0 or not 0.0 < likelihood_power <= 1.0:
+            raise ValueError("BMA forgetting and likelihood power must be in (0, 1]")
+        teams = tuple(teams)
+        specifications = (
+            {
+                "form_features": ("xg_share", "shot_share", "sat_share"),
+            },
+            {
+                "form_decay": 0.92,
+                "james_stein_scale": 0.05,
+            },
+        )
+        self.names = ("possession", "fast_james_stein")
+        self.members = [
+            BayesianPlackettLuce(teams, **(specification | model_options))
+            for specification in specifications
+        ]
+        self.log_weights = np.full(len(self.members), -log(len(self.members)))
+        self.forgetting = forgetting
+        self.likelihood_power = likelihood_power
+        self._pending: tuple[str, str, date, NDArray[np.float64]] | None = None
+
+    @property
+    def spectral_diagnostics(self) -> SpectralDiagnostics | None:
+        """Expose the first member's identically scheduled spectral audit."""
+
+        return self.members[0].spectral_diagnostics
+
+    @property
+    def weights(self) -> NDArray[np.float64]:
+        """Return normalized posterior model probabilities."""
+
+        return np.exp(self.log_weights)
+
+    def start_new_season(self) -> None:
+        """Apply the same offseason transition to every candidate model."""
+
+        for member in self.members:
+            member.start_new_season()
+        self._pending = None
+
+    def predict_details(self, home: str, away: str, played_on: date) -> dict[str, float]:
+        """Average predictive distributions using pre-game model weights."""
+
+        member_details = [
+            member.predict_details(home, away, played_on) for member in self.members
+        ]
+        probabilities = np.array(
+            [details["home_win_probability"] for details in member_details]
+        )
+        weights = self.weights
+        margin_means = np.array(
+            [details["latent_margin_mean"] for details in member_details]
+        )
+        margin_variances = np.array(
+            [details["latent_margin_sd"] ** 2 for details in member_details]
+        )
+        margin_mean = float(weights @ margin_means)
+        margin_sd = sqrt(max(float(
+            weights @ (margin_variances + margin_means**2) - margin_mean**2
+        ), 0.0))
+        self._pending = (home, away, played_on, probabilities)
+        result = {
+            "home_win_probability": float(weights @ probabilities),
+            "latent_margin_mean": margin_mean,
+            "latent_margin_sd": margin_sd,
+            "home_win_epistemic_lower": _sigmoid(margin_mean - 1.96 * margin_sd),
+            "home_win_epistemic_upper": _sigmoid(margin_mean + 1.96 * margin_sd),
+            "james_stein_factor": float(
+                weights @ np.array([
+                    details["james_stein_factor"] for details in member_details
+                ])
+            ),
+        }
+        for index, name in enumerate(self.names):
+            result[f"{name}_probability"] = float(probabilities[index])
+            result[f"{name}_weight"] = float(weights[index])
+        return result
+
+    def predict(self, home: str, away: str, played_on: date) -> float:
+        """Return the model-averaged home-win probability."""
+
+        return self.predict_details(home, away, played_on)["home_win_probability"]
+
+    def update(
+        self,
+        home: str,
+        away: str,
+        played_on: date,
+        home_win: bool,
+        game: dict | None = None,
+    ) -> None:
+        """Update model probabilities from the held-out result, then each member."""
+
+        if self._pending is None or self._pending[:3] != (home, away, played_on):
+            self.predict_details(home, away, played_on)
+        assert self._pending is not None
+        probabilities = self._pending[3]
+        likelihoods = probabilities if home_win else 1.0 - probabilities
+        self.log_weights = (
+            self.forgetting * self.log_weights
+            + self.likelihood_power * np.log(np.clip(likelihoods, 1e-12, 1.0))
+        )
+        self.log_weights -= np.logaddexp.reduce(self.log_weights)
+        for member in self.members:
+            member.update(home, away, played_on, home_win, game)
+        self._pending = None
+
+
+def backtest(
+    games: list[dict],
+    *,
+    model_average: bool = True,
+    **model_options: float,
+) -> tuple[list[dict], dict[str, float]]:
     """Generate one strictly out-of-sample prediction per chronological game."""
 
     if not games:
         raise ValueError("games cannot be empty")
     teams = {row[side] for row in games for side in ("home_team", "away_team")}
-    model = BayesianPlackettLuce(teams, **model_options)
+    model = (
+        BayesianModelAverage(teams, **model_options)
+        if model_average
+        else BayesianPlackettLuce(teams, **model_options)
+    )
     predictions = []
     losses = []
     home_rate_losses = []
@@ -451,6 +580,11 @@ def backtest(games: list[dict], **model_options: float) -> tuple[list[dict], dic
                 "wigner_radius": spectral.wigner_radius,
             }
         )
+    if isinstance(model, BayesianModelAverage):
+        metrics.update({
+            f"final_{name}_weight": float(weight)
+            for name, weight in zip(model.names, model.weights, strict=True)
+        })
     # Flat per-season keys keep the CLI JSON easy to consume while exposing
     # regime drift that one aggregate score can hide.
     if all("season" in row for row in predictions):
@@ -487,14 +621,19 @@ def fit(
     games: list[dict],
     *,
     extra_teams: Iterable[str] = (),
+    model_average: bool = True,
     **model_options: float,
-) -> tuple[BayesianPlackettLuce, int | None]:
+) -> tuple[BayesianPlackettLuce | BayesianModelAverage, int | None]:
     """Fit the sequential posterior to all completed games for live forecasts."""
 
     if not games:
         raise ValueError("games cannot be empty")
     teams = {row[side] for row in games for side in ("home_team", "away_team")}
-    model = BayesianPlackettLuce(teams | set(extra_teams), **model_options)
+    model = (
+        BayesianModelAverage(teams | set(extra_teams), **model_options)
+        if model_average
+        else BayesianPlackettLuce(teams | set(extra_teams), **model_options)
+    )
     current_season: int | None = None
     for row in sorted(games, key=lambda game: (game["start_time_utc"], game["game_id"])):
         if current_season is not None and row.get("season") != current_season:
@@ -511,7 +650,13 @@ def fit(
     return model, current_season
 
 
-def forecast(games: list[dict], schedule: list[dict], **model_options: float) -> list[dict]:
+def forecast(
+    games: list[dict],
+    schedule: list[dict],
+    *,
+    model_average: bool = True,
+    **model_options: float,
+) -> list[dict]:
     """Fit completed history and forecast an exact future schedule."""
 
     if not schedule:
@@ -523,7 +668,12 @@ def forecast(games: list[dict], schedule: list[dict], **model_options: float) ->
     scheduled_teams = {
         row[side] for row in schedule for side in ("home_team", "away_team")
     }
-    model, current_season = fit(games, extra_teams=scheduled_teams, **model_options)
+    model, current_season = fit(
+        games,
+        extra_teams=scheduled_teams,
+        model_average=model_average,
+        **model_options,
+    )
     predictions = []
     for row in sorted(schedule, key=lambda game: (game["start_time_utc"], game["game_id"])):
         if current_season is not None and row.get("season") != current_season:

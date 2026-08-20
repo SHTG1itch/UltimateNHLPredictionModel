@@ -16,7 +16,7 @@ from nhl_predictor.data import (
     read_games,
 )
 from nhl_predictor.cli import _file_metadata
-from nhl_predictor.model import BayesianPlackettLuce, backtest, forecast
+from nhl_predictor.model import BayesianModelAverage, BayesianPlackettLuce, backtest, forecast
 from nhl_predictor.random_matrix import clean_covariance
 
 
@@ -53,6 +53,19 @@ def test_positive_part_james_stein_shrinks_team_signal() -> None:
     assert shrunk_details["james_stein_factor"] == 0.0
     assert raw_details["james_stein_factor"] == 1.0
     assert shrunk_details["home_win_probability"] < raw_details["home_win_probability"]
+
+
+def test_bayesian_model_weights_learn_only_after_result() -> None:
+    model = BayesianModelAverage(["A", "B", "C", "D"])
+    played_on = date(2025, 1, 1)
+    for member, direction in zip(model.members, (1.0, -1.0), strict=True):
+        member.mean[member.index["A"]] = direction
+        member.mean[member.index["B"]] = -direction
+        member.covariance *= 1e-6
+    details = model.predict_details("A", "B", played_on)
+    assert details["possession_weight"] == details["fast_james_stein_weight"] == 0.5
+    model.update("A", "B", played_on, True)
+    assert model.weights[0] > model.weights[1]
 
 
 def test_backtest_predicts_before_learning_result() -> None:
