@@ -33,6 +33,9 @@ scores plus an overtime indicator. Each team then has eight post-game fields:
 - `xg` is the sum of MoneyPuck pre-shot goal probabilities for that team/game.
 - `xg_available` explicitly marks source coverage. If false, both stored xG
   values are zero sentinels and the model skips that game's xG form update.
+- `starter_goalie_id`, `starter_time_on_ice`, `starter_goals_against`, and
+  `starter_shots_against` describe the actual starter after the game. They may
+  update goalie history but may never be read as a same-game pregame feature.
 
 `read_games()` converts IDs, scores, and flags to integers and every team stat
 to floating point. Missing columns raise `ValueError`; malformed or partial API

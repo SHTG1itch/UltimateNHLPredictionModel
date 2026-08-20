@@ -7,6 +7,7 @@ import numpy as np
 
 from nhl_predictor.data import (
     FIELDS,
+    GOALIE_FIELDS,
     TEAM_STAT_FIELDS,
     XG_FIELDS,
     _aggregate_xg,
@@ -94,6 +95,7 @@ def test_enriched_game_csv_is_typed(tmp_path) -> None:
     parsed = read_games(path)[0]
     assert isinstance(parsed["game_id"], int)
     assert isinstance(parsed["xg_available"], int)
+    assert all(isinstance(parsed[field], int) for field in GOALIE_FIELDS)
     assert all(isinstance(parsed[field], float) for field in (*TEAM_STAT_FIELDS, *XG_FIELDS))
 
 

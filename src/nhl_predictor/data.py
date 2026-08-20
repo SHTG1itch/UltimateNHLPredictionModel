@@ -24,6 +24,7 @@ TEAM_CODES = (
 )
 API = "https://api-web.nhle.com/v1/club-schedule-season/{team}/{season}"
 STATS_API = "https://api.nhle.com/stats/rest/en/team/{report}"
+GOALIE_STATS_API = "https://api.nhle.com/stats/rest/en/goalie/summary"
 SCHEDULE_API = "https://api-web.nhle.com/v1/schedule/{date}"
 MONEYPUCK_XG_API = "https://peter-tanner.com/moneypuck/downloads/shots_{year}.zip"
 # Each report is league-wide and game-grained, avoiding one API request per
@@ -55,11 +56,17 @@ TEAM_STAT_FIELDS = tuple(
     )
 )
 XG_FIELDS = ("home_xg", "away_xg")
+GOALIE_FIELDS = tuple(
+    f"{side}_starter_{field}"
+    for side in ("home", "away")
+    for field in ("goalie_id", "time_on_ice", "goals_against", "shots_against")
+)
 FIELDS = (
     "game_id", "season", "game_type", "game_date", "start_time_utc",
     "home_team", "away_team", "home_score", "away_score", "overtime",
     *TEAM_STAT_FIELDS,
     *XG_FIELDS,
+    *GOALIE_FIELDS,
     "xg_available",
 )
 
@@ -95,6 +102,26 @@ def _fetch_report(season: int, game_type: int, report: str, timeout: float) -> l
     request = Request(
         f"{STATS_API.format(report=report)}?{query}",
         headers={"User-Agent": "UltimateNHLPredictionModel/0.2"},
+    )
+    with urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed HTTPS host
+        return json.load(response).get("data", [])
+
+
+def _fetch_goalies(season: int, game_type: int, timeout: float) -> list[dict]:
+    """Fetch league-wide per-game goalie rows for starter identification."""
+
+    query = urlencode(
+        {
+            "isAggregate": "false",
+            "isGame": "true",
+            "start": 0,
+            "limit": -1,
+            "cayenneExp": f"seasonId={season} and gameTypeId={game_type}",
+        }
+    )
+    request = Request(
+        f"{GOALIE_STATS_API}?{query}",
+        headers={"User-Agent": "UltimateNHLPredictionModel/0.3"},
     )
     with urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed HTTPS host
         return json.load(response).get("data", [])
@@ -230,6 +257,27 @@ def download_seasons(
                 for source, destination in REPORT_FIELDS[report].items():
                     values[destination] = float(record.get(source) or 0.0)
 
+    starters: dict[tuple[int, str], dict[str, int]] = {}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [
+            pool.submit(_fetch_goalies, season, game_type, timeout)
+            for season in seasons
+            for game_type in (2, 3)
+        ]
+        for future in as_completed(futures):
+            for record in future.result():
+                if int(record.get("gamesStarted") or 0) != 1:
+                    continue
+                key = (int(record["gameId"]), record["homeRoad"])
+                if key in starters:
+                    raise ValueError(f"multiple starting goalies for game {key[0]} ({key[1]})")
+                starters[key] = {
+                    "goalie_id": int(record["playerId"]),
+                    "time_on_ice": int(record["timeOnIce"]),
+                    "goals_against": int(record["goalsAgainst"]),
+                    "shots_against": int(record["shotsAgainst"]),
+                }
+
     rows = []
     for game in games.values():
         # Preseason (type 1) is excluded because rosters and incentives differ.
@@ -257,6 +305,10 @@ def download_seasons(
                 raise ValueError(f"incomplete NHL Stats reports for game {row['game_id']} ({side})")
             row.update({f"{side}_{field}": value for field, value in game_stats.items()})
             xg_by_side[side] = expected_goals.get((row["game_id"], orientation))
+            starter = starters.get((row["game_id"], orientation))
+            if starter is None:
+                raise ValueError(f"missing starting goalie for game {row['game_id']} ({side})")
+            row.update({f"{side}_starter_{field}": value for field, value in starter.items()})
         if (xg_by_side["home"] is None) != (xg_by_side["away"] is None):
             raise ValueError(f"partial MoneyPuck expected goals for game {row['game_id']}")
         row["xg_available"] = int(xg_by_side["home"] is not None)
@@ -287,6 +339,7 @@ def read_games(path: str | Path) -> list[dict]:
         for field in (
             "game_id", "season", "game_type", "home_score", "away_score",
             "overtime", "xg_available",
+            *GOALIE_FIELDS,
         ):
             row[field] = int(row[field])
         for field in (*TEAM_STAT_FIELDS, *XG_FIELDS):
