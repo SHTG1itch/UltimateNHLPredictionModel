@@ -15,12 +15,23 @@ For home team \(h\) and away team \(a\), the two-item Plackett-Luce likelihood
 P(h \succ a) = \sigma(s_h - s_a + \boldsymbol{\beta}^{T}\mathbf{x}_{ha}).
 \]
 
-The context vector contains home ice, differential rest, and rolling contrasts
+The context vector contains home ice, schedule fatigue, and rolling contrasts
 for expected-goal share, shot share, special teams, total-shot-attempt share
 (SAT/Corsi), finishing above xG, and goals saved above xG. Every rolling rate
 uses conservative league-average pseudo-counts and exponentially decayed
-sufficient statistics. With decay 0.96, a game's weight halves after about 17
-subsequent team games. Current-game statistics never enter its own prediction.
+sufficient statistics. Current-game statistics never enter its own prediction.
+
+Schedule fatigue is computed entirely from prior game dates. If \(B_i\) marks a
+back-to-back and \(N_{i,5}\) is team \(i\)'s number of prior games in the last
+five days, its scalar cost is
+
+\[
+F_i=B_i+0.25\max(N_{i,5}-1,0),
+\]
+
+and the model receives \(F_a-F_h\). Validation rejected treating every extra
+off-day as distinct; the back-to-back plus congestion representation was both
+simpler and more accurate.
 
 The latent team strengths and context coefficients have a multivariate Gaussian
 posterior. If \(\mathbf{m}\) and \(\mathbf{C}\) are the prior mean and covariance,
@@ -37,17 +48,20 @@ This rank-one Sherman-Morrison form avoids a matrix inverse per game. Posterior
 predictions integrate uncertainty with MacKay's logistic-Gaussian approximation
 \(\sigma(\mu/\sqrt{1+\pi\sigma^2/8})\). Team ratings partially pool 60% toward
 their previous value between seasons, while covariance increases to represent
-roster turnover.
+roster turnover. The initial team prior variance is 0.20 and daily diffusion is
+\(10^{-7}\), both selected conservatively to avoid early-season overconfidence
+and unsupported day-to-day drift.
 
 ### James-Stein shrinkage and Bayesian model averaging
 
 The CLI averages two complementary specifications rather than assuming that one
 feature horizon is certainly correct:
 
-1. `possession` uses xG share, shot share, and SAT share with the original form
-   decay.
-2. `fast_james_stein` uses the full six-feature context, faster 0.92 form decay,
-   tempered James-Stein team effects, and conservative score-margin evidence.
+1. `possession` uses xG share, shot share, and SAT share with 0.94 form decay,
+   a half-life of about 11 team games.
+2. `fast_james_stein` uses the full six-feature context with 0.70 form decay,
+   a half-life of about two team games, tempered James-Stein team effects, and
+   conservative score-margin evidence.
 
 For the second member, let \(p\) be the number of teams, \(\mathbf{s}\) their
 posterior means, and
@@ -60,7 +74,7 @@ The positive-part estimator used at prediction time is
 \tilde s_i=\bar s+\kappa(s_i-\bar s),
 \]
 
-with \(\rho=0.05\). The theorem's \(p\ge3\) boundary is enforced, and
+with \(\rho=0.15\). The theorem's \(p\ge3\) boundary is enforced, and
 \(\rho=0\) is the exact no-shrinkage ablation. Shrinkage changes forecasts but
 does not destructively overwrite the learned posterior. The classical
 \(\rho=1\) coefficient was far too strong for correlated, evolving NHL ratings;
@@ -76,9 +90,9 @@ weight. The reported forecast is
 \left[p_{k,t}^{y_t}(1-p_{k,t})^{1-y_t}\right]^{\eta},
 \]
 
-where forgetting \(\alpha=0.95\) prevents obsolete seasons from permanently
-locking a member out and fractional likelihood power \(\eta=0.05\) prevents two
-highly correlated models from producing unjustifiably extreme weights. Each
+where forgetting \(\alpha=0.20\) quickly returns two closely related members
+toward equal support and fractional likelihood power \(\eta=0.10\) prevents
+one result from producing unjustifiably extreme weights. Each
 ledger row records both member probabilities and their pre-result weights.
 The binary outcome updates the weights only after that row is recorded.
 
@@ -88,11 +102,12 @@ deviation. The 95% epistemic bounds are
 parameter uncertainty in the underlying win propensity, not a confidence
 interval for the binary outcome of one inherently random game.
 
-Overtime and shootout results use a 0.70 power likelihood because they are
-near-ties. In the fast James-Stein member, the rating target is also softened to
-0.90 for the winner and 0.10 for the loser, a conservative Davidson-inspired
-tie treatment; the moneyline evaluation target remains the actual winner. That
-member's regulation evidence is multiplied by
+Overtime and shootout results are near-ties: the possession member uses a 0.70
+power likelihood and the fast member uses 0.40. In the fast James-Stein member,
+the rating target is also softened to 0.90 for the winner and 0.10 for the
+loser, a conservative Davidson-inspired tie treatment; the moneyline evaluation
+target remains the actual winner. That member's regulation evidence is
+multiplied by
 
 \[
 1 + 0.20\log(\max(|G_h-G_a|,1)),
@@ -208,14 +223,14 @@ produced:
 
 ```json
 {
-  "accuracy": 0.597025597025597,
-  "brier_score": 0.235413911988443,
+  "accuracy": 0.5998855998855999,
+  "brier_score": 0.2340353761024475,
   "elo_log_loss": 0.6754472619256587,
-  "final_fast_james_stein_weight": 0.4978780408261035,
-  "final_possession_weight": 0.5021219591738965,
+  "final_fast_james_stein_weight": 0.49534041556162567,
+  "final_possession_weight": 0.5046595844383743,
   "games": 6993.0,
   "home_rate_log_loss": 0.6908971193256509,
-  "log_loss": 0.6632692889626939,
+  "log_loss": 0.6600472890087719,
   "mp_noise_eigenvalues": 32.0,
   "mp_signal_eigenvalues": 1.0
 }
@@ -225,23 +240,24 @@ Season-level results expose drift hidden by the aggregate:
 
 | Season role | Games | Model log loss | Elo log loss | Brier | Accuracy |
 |---|---:|---:|---:|---:|---:|
-| 2021-22 warm-up | 1,401 | 0.65939 | 0.65977 | 0.23293 | 62.10% |
-| 2022-23 validation | 1,400 | 0.66107 | 0.66988 | 0.23434 | 60.86% |
-| 2023-24 validation | 1,400 | 0.65376 | 0.67198 | 0.23107 | 61.50% |
-| 2024-25 parameter holdout | 1,398 | 0.65963 | 0.67660 | 0.23394 | 59.08% |
-| 2025-26 prospective check | 1,394 | 0.68258 | 0.69912 | 0.24483 | 54.95% |
+| 2021-22 warm-up | 1,401 | 0.65100 | 0.65977 | 0.22944 | 62.81% |
+| 2022-23 validation | 1,400 | 0.65788 | 0.66988 | 0.23300 | 61.07% |
+| 2023-24 validation | 1,400 | 0.65373 | 0.67198 | 0.23102 | 61.93% |
+| 2024-25 parameter holdout | 1,398 | 0.65699 | 0.67660 | 0.23276 | 59.30% |
+| 2025-26 prospective check | 1,394 | 0.68073 | 0.69912 | 0.24401 | 54.81% |
 
-Every season's log loss improves over the former single-model benchmark. Across
-all games, log loss falls from 0.664299 to 0.663269, Brier score falls from
-0.235900 to 0.235414, and accuracy rises from 59.46% to 59.70% (17 additional
-correct winners). The final weights remain near 50/50, evidence that both
-specifications continue to contribute rather than one serving as dead code.
+Every season's log loss improves over the preceding model-averaged benchmark.
+Across all games, log loss falls from 0.663269 to 0.660047, Brier score falls
+from 0.235414 to 0.234035, and accuracy rises from 59.70% to 59.99% (20
+additional correct winners). The final weights remain near 50/50, evidence that
+both specifications continue to contribute rather than one serving as dead code.
 
 The defaults minimize mean log loss across the 2022-23 and 2023-24 validation
-seasons. The explored grid covered team prior variance 0.5-3.0, context variance
-0.1-3.0, daily diffusion \(10^{-6}\)-\(10^{-3}\), form decay 0.85-0.985,
-offseason retention 0.5-1.0, and offseason variance 0.01-0.4. Those values were
-frozen before the later-season checks under the selected defaults.
+seasons. The explored grid covered team prior variance 0.05-3.0, context
+variance 0.1-3.0, daily diffusion \(10^{-8}\)-\(10^{-3}\), form decay
+0.30-0.985, offseason retention 0.3-1.0, and offseason variance 0.005-0.4.
+Later seasons were retained as explicit robustness checks rather than folded
+into one randomly shuffled training score.
 
 Shot-quality feature selection used the same validation seasons. Eight fixed
 ablations compared the previous score/shot percentages with xG share and xG
@@ -254,22 +270,23 @@ An overtime power-likelihood grid (0.40, 0.55, 0.70, 0.85, 1.00) selected 0.70,
 improving validation mean log loss from 0.658196 to 0.657943. The later 2024-25
 check also improved; 2025-26 was essentially flat and slightly worse.
 
-The advanced-model experiments were again selected on the 2022-23 and 2023-24
-validation seasons before inspecting the two later seasons:
+The advanced-model experiments used the 2022-23 and 2023-24 mean as the primary
+selection score and reported the next two seasons separately:
 
 | Candidate | Validation mean log loss | Later-season mean | All games | Decision |
 |---|---:|---:|---:|---|
-| Previous single model | 0.657944 | 0.672220 | 0.664299 | Reference |
-| Classical James-Stein alone (\(\rho=1\)) | 0.672847 | 0.678447 | 0.674488 | Reject: excessive shrinkage |
-| Dynamic BMA before margin term | 0.657537 | 0.671140 | 0.663252 | Retain |
-| Final BMA + member-specific log margin | **0.657417** | **0.671099** | 0.663269 | Retain |
+| Previous model average | 0.657417 | 0.671099 | 0.663269 | Reference |
+| Revised horizons and shrinkage | 0.657275 | 0.670532 | 0.662982 | Retain |
+| Stronger prior + lower drift | 0.657031 | 0.670378 | 0.661729 | Retain |
+| Back-to-back status | 0.656207 | 0.669811 | 0.660636 | Retain |
+| Five-day congestion | 0.655876 | 0.668870 | 0.660110 | Retain |
+| Final ensemble retuning | **0.655805** | **0.668858** | **0.660047** | Retain |
 
-The tiny aggregate difference between the last two rows comes from the warm-up
-season, which was not used for selection. The margin term was retained because
-it improved the declared validation objective, the later-season mean, Brier
-score, and accuracy. Fixed temperature scaling and a separate online Bayesian
-logit calibrator were rejected: both worsened the validation score, so neither
-was stacked onto already calibrated posterior probabilities.
+Fixed temperature/intercept scaling, a separate online Bayesian logit
+calibrator, faceoff form, separate fatigue coefficients, seasonal home-ice
+resets, and extra model-average members were rejected because they failed to
+improve the declared validation objective without a compensating calibration
+cost. The simplest validated model remains the shipped model.
 
 The model beats Elo on probability quality in every post-warm-up season, but
 2024-25 winner accuracy is slightly lower than Elo. Log loss remains the model
@@ -284,7 +301,8 @@ season's hit rate would not improve the probability forecast.
 - Hyperparameters are fixed defaults in `BayesianPlackettLuce` and
   `BayesianModelAverage`; the benchmark command requires no hidden notebook or
   private configuration.
-- Current rolling features include xG, shots, SAT, rest, and special teams.
+- Current rolling features include xG, shots, SAT, schedule fatigue, and special
+  teams.
   A time-zone travel feature was researched but rejected: it worsened validation
   mean log loss from 0.658196 to 0.658442, and a strongly shrunk travel prior did
   not beat exclusion. A future candidate needs actual distance and circadian
