@@ -127,19 +127,26 @@ class BayesianPlackettLuce:
         self.form = np.zeros((self.team_count, 14))
         self.last_date: date | None = None
         self.last_played: dict[str, date] = {}
+        self.recent_games: defaultdict[str, list[date]] = defaultdict(list)
         self.current_week: tuple[int, int] | None = None
         self.weekly_residual = np.zeros(self.team_count)
         self.weekly_innovations: list[NDArray[np.float64]] = []
         self.spectral_diagnostics: SpectralDiagnostics | None = None
 
     def _rest_feature(self, home: str, away: str, played_on: date) -> float:
-        """Return home-minus-away rested status; opening rest is neutral."""
+        """Return away-minus-home fatigue from back-to-backs and congestion."""
 
-        def rested(team: str) -> bool:
+        def fatigue(team: str) -> float:
             previous = self.last_played.get(team)
-            return previous is None or (played_on - previous).days > 1
+            back_to_back = previous is not None and (played_on - previous).days == 1
+            # ponytail: NHL season lists are tiny; use deques if schedules grow.
+            crowded = max(
+                sum((played_on - game).days <= 5 for game in self.recent_games[team]) - 1,
+                0,
+            )
+            return float(back_to_back) + 0.25 * crowded
 
-        return float(rested(home)) - float(rested(away))
+        return fatigue(away) - fatigue(home)
 
     def _form_rates(self, team: str) -> dict[str, float]:
         """Return Bayesian-smoothed rates from only the team's previous games."""
@@ -210,6 +217,7 @@ class BayesianPlackettLuce:
         # Offseason duration is not meaningful game rest, so opening-day rest
         # contrasts begin neutral for every team.
         self.last_played.clear()
+        self.recent_games.clear()
 
     def _advance_time(self, played_on: date) -> None:
         """Diffuse uncertain team strengths between game dates."""
@@ -383,6 +391,8 @@ class BayesianPlackettLuce:
         self.weekly_residual[self.index[away]] -= residual
         self.last_played[home] = played_on
         self.last_played[away] = played_on
+        self.recent_games[home].append(played_on)
+        self.recent_games[away].append(played_on)
         if game is not None:
             self._update_form(home, away, game)
 

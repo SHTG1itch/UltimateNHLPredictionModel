@@ -39,6 +39,10 @@ def test_rest_feature_only_penalizes_back_to_back_games() -> None:
     assert model._rest_feature("A", "B", played_on) == -1.0
     model.last_played["A"] = date(2025, 1, 2)
     assert model._rest_feature("A", "B", played_on) == 0.0
+    later = date(2025, 1, 6)
+    model.recent_games["A"] = [date(2025, 1, 1), date(2025, 1, 2)]
+    model.recent_games["B"] = [date(2025, 1, 1)]
+    assert model._rest_feature("A", "B", later) == -0.25
 
 
 def test_overtime_result_has_smaller_posterior_update() -> None:
