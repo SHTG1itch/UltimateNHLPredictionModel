@@ -75,6 +75,7 @@ def test_enriched_game_csv_is_typed(tmp_path) -> None:
         away_team="B",
         home_score=3,
         away_score=2,
+        xg_available=1,
     )
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=FIELDS)
@@ -83,6 +84,7 @@ def test_enriched_game_csv_is_typed(tmp_path) -> None:
 
     parsed = read_games(path)[0]
     assert isinstance(parsed["game_id"], int)
+    assert isinstance(parsed["xg_available"], int)
     assert all(isinstance(parsed[field], float) for field in (*TEAM_STAT_FIELDS, *XG_FIELDS))
 
 

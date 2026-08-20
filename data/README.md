@@ -31,6 +31,8 @@ scores plus an overtime indicator. Each team then has eight post-game fields:
 - `pp_goals` and `pp_opportunities` are power-play scoring sufficient stats.
 - `pk_goals_against` and `times_shorthanded` are penalty-kill sufficient stats.
 - `xg` is the sum of MoneyPuck pre-shot goal probabilities for that team/game.
+- `xg_available` explicitly marks source coverage. If false, both stored xG
+  values are zero sentinels and the model skips that game's xG form update.
 
 `read_games()` converts IDs, scores, and flags to integers and every team stat
 to floating point. Missing columns raise `ValueError`; malformed or partial API

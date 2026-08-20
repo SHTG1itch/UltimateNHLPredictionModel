@@ -60,6 +60,7 @@ FIELDS = (
     "home_team", "away_team", "home_score", "away_score", "overtime",
     *TEAM_STAT_FIELDS,
     *XG_FIELDS,
+    "xg_available",
 )
 
 
@@ -247,6 +248,7 @@ def download_seasons(
                 "away_score": int(game["awayTeam"]["score"]),
                 "overtime": int(period in {"OT", "SO"}),
         }
+        xg_by_side: dict[str, float | None] = {}
         for side, orientation in (("home", "H"), ("away", "R")):
             game_stats = stats.get((row["game_id"], orientation))
             if game_stats is None or set(game_stats) != {
@@ -254,10 +256,14 @@ def download_seasons(
             }:
                 raise ValueError(f"incomplete NHL Stats reports for game {row['game_id']} ({side})")
             row.update({f"{side}_{field}": value for field, value in game_stats.items()})
-            xg = expected_goals.get((row["game_id"], orientation))
-            if xg is None:
-                raise ValueError(f"missing MoneyPuck expected goals for game {row['game_id']} ({side})")
-            row[f"{side}_xg"] = xg
+            xg_by_side[side] = expected_goals.get((row["game_id"], orientation))
+        if (xg_by_side["home"] is None) != (xg_by_side["away"] is None):
+            raise ValueError(f"partial MoneyPuck expected goals for game {row['game_id']}")
+        row["xg_available"] = int(xg_by_side["home"] is not None)
+        for side in ("home", "away"):
+            # Zero is a storage sentinel only when the explicit availability
+            # flag is false; downstream form updates skip the whole xG pair.
+            row[f"{side}_xg"] = xg_by_side[side] or 0.0
         rows.append(row)
 
     destination = Path(output)
@@ -278,7 +284,10 @@ def read_games(path: str | Path) -> list[dict]:
     if missing:
         raise ValueError(f"missing CSV columns: {', '.join(sorted(missing))}")
     for row in rows:
-        for field in ("game_id", "season", "game_type", "home_score", "away_score", "overtime"):
+        for field in (
+            "game_id", "season", "game_type", "home_score", "away_score",
+            "overtime", "xg_available",
+        ):
             row[field] = int(row[field])
         for field in (*TEAM_STAT_FIELDS, *XG_FIELDS):
             row[field] = float(row[field])
