@@ -420,10 +420,10 @@ class BayesianModelAverage:
             },
             {
                 "form_decay": 0.70,
-                "james_stein_scale": 0.15,
+                "james_stein_scale": 0.22,
                 "overtime_weight": 0.40,
                 "overtime_credit": 0.90,
-                "margin_scale": 0.20,
+                "margin_scale": 0.35,
             },
         )
         self.names = ("possession", "fast_james_stein")
