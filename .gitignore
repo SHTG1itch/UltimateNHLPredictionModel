@@ -1,0 +1,11 @@
+# Downloaded NHL data and generated predictions are reproducible and can grow.
+data/*.csv
+artifacts/
+
+# Python build/test by-products.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+*.egg-info/
+
