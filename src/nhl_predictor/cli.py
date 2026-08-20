@@ -4,11 +4,23 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 from pathlib import Path
 
 from .data import download_seasons, fetch_schedule, read_games
 from .model import backtest, forecast
+
+
+def _file_metadata(path: str) -> dict[str, int | str]:
+    """Return reproducibility metadata without loading the whole file in memory."""
+
+    digest = hashlib.sha256()
+    source = Path(path)
+    with source.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {"bytes": source.stat().st_size, "sha256": digest.hexdigest()}
 
 
 def _write_predictions(rows: list[dict], path: str) -> None:
@@ -46,7 +58,16 @@ def main() -> None:
     arguments = parser.parse_args()
     if arguments.command == "download":
         count = download_seasons(arguments.seasons, arguments.output)
-        print(json.dumps({"games": count, "output": arguments.output}, indent=2))
+        print(
+            json.dumps(
+                {
+                    "games": count,
+                    "output": arguments.output,
+                    **_file_metadata(arguments.output),
+                },
+                indent=2,
+            )
+        )
     elif arguments.command == "backtest":
         predictions, metrics = backtest(read_games(arguments.input))
         _write_predictions(predictions, arguments.output)

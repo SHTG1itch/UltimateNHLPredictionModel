@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 from datetime import date, timedelta
 
 import numpy as np
@@ -14,6 +15,7 @@ from nhl_predictor.data import (
     _parse_schedule,
     read_games,
 )
+from nhl_predictor.cli import _file_metadata
 from nhl_predictor.model import BayesianPlackettLuce, backtest, forecast
 from nhl_predictor.random_matrix import clean_covariance
 
@@ -120,6 +122,10 @@ def test_enriched_game_csv_is_typed(tmp_path) -> None:
     assert isinstance(parsed["xg_available"], int)
     assert all(isinstance(parsed[field], int) for field in GOALIE_FIELDS)
     assert all(isinstance(parsed[field], float) for field in (*TEAM_STAT_FIELDS, *XG_FIELDS))
+
+    metadata = _file_metadata(str(path))
+    assert metadata["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert metadata["bytes"] == path.stat().st_size
 
 
 def test_shots_are_compacted_to_game_team_expected_goals() -> None:

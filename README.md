@@ -126,6 +126,8 @@ Downloaded data is ignored by Git. The downloader stores one compact CSV rather
 than raw API responses, and generated ledgers go under ignored `artifacts/`.
 The complete five-season development workspace is measured during validation
 and remains several orders of magnitude below the hard 10 GB ceiling.
+The download command prints the exact CSV byte size and SHA-256 digest so a
+benchmark can be tied to the data bytes that produced it.
 
 ### Forecast an upcoming date
 
@@ -146,7 +148,9 @@ they do not pretend that unrecorded starting-goalie or lineup news is known.
 
 `nhl-predict backtest` writes model and baseline probabilities to
 `artifacts/predictions.csv`. A verified run over 6,993 games from 2021-22
-through 2025-26 produced:
+through 2025-26 used a 1,455,248-byte `data/games.csv` with SHA-256
+`1595aabe4098c707a6cee8ebe571eca44e31f2bb8f8803d64794a4af0d865139` and
+produced:
 
 ```json
 {
