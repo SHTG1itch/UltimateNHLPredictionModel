@@ -69,8 +69,8 @@ supplies 20%. The current game's participants remain unavailable until after its
 forecast. Skater $i$'s postgame update is
 
 \[
-R_i' = R_i + 8(y-p)n w_i
-+0.5\operatorname{clip}(q_i-w_i\textstyle\sum_j q_j,-2,2),
+R_i' = R_i + 6(y-p)n w_i
++0.65\operatorname{clip}(q_i-w_i\textstyle\sum_j q_j,-2,2),
 \]
 
 where $nw_i$ adjusts the team-result residual for usage and
@@ -79,7 +79,7 @@ Goalies receive the team residual plus a bounded saves-above-90.5% update.
 Thus a player's Elo combines results and individual effectiveness without using
 future roster knowledge.
 
-Every pair of players that appears together also receives a 0.75-scaled result
+Every pair of players that appears together also receives a 0.50-scaled result
 residual. The last lineup's mean pair value is its chemistry Elo, so a proven
 unit can outrank an equal collection of individually strong but unproven players.
 Individual and pair ratings retain 60% across an offseason. Ledger rows expose
@@ -88,7 +88,7 @@ overall Elo; the final run learned 1,857 player ratings and 76,173 pair ratings.
 
 For repeated opponents, the model stores the decayed residual between the prior
 result and its pregame expectation, rather than double-counting raw wins already
-explained by team strength. A 0.50 meeting decay, two-game prior, and 0.03 scale
+explained by team strength. A 0.50 meeting decay, two-game prior, and 0.01 scale
 retain persistent matchup surprises while strongly shrinking rivalry noise.
 
 ### James-Stein shrinkage and model averaging
@@ -268,8 +268,8 @@ produced:
 
 ```json
 {
-  "accuracy": 0.6041756041756042,
-  "brier_score": 0.2331904035173882,
+  "accuracy": 0.6047476047476047,
+  "brier_score": 0.23319281435657332,
   "elo_log_loss": 0.6748934351602023,
   "final_chemistry_pairs": 76173.0,
   "final_fast_james_stein_weight": 0.45,
@@ -278,7 +278,7 @@ produced:
   "final_probability_temperature": 1.1,
   "games": 6993.0,
   "home_rate_log_loss": 0.6906025254572833,
-  "log_loss": 0.6581581045794378,
+  "log_loss": 0.658162142200604,
   "mp_noise_eigenvalues": 31.0,
   "mp_signal_eigenvalues": 1.0
 }
@@ -288,15 +288,15 @@ Season-level results expose drift hidden by the aggregate:
 
 | Season role | Games | Model log loss | Elo log loss | Brier | Accuracy |
 |---|---:|---:|---:|---:|---:|
-| 2021-22 evaluation | 1,401 | 0.64250 | 0.65655 | 0.22551 | 63.88% |
-| 2022-23 validation | 1,400 | 0.65720 | 0.67030 | 0.23271 | 60.86% |
-| 2023-24 validation | 1,400 | 0.65334 | 0.67205 | 0.23090 | 61.79% |
-| 2024-25 parameter holdout | 1,398 | 0.65630 | 0.67657 | 0.23249 | 60.30% |
+| 2021-22 evaluation | 1,401 | 0.64247 | 0.65655 | 0.22549 | 63.88% |
+| 2022-23 validation | 1,400 | 0.65714 | 0.67030 | 0.23269 | 61.07% |
+| 2023-24 validation | 1,400 | 0.65344 | 0.67205 | 0.23094 | 61.79% |
+| 2024-25 parameter holdout | 1,398 | 0.65632 | 0.67657 | 0.23250 | 60.37% |
 | 2025-26 prospective check | 1,394 | 0.68155 | 0.69912 | 0.24440 | 55.24% |
 
-Against the preceding published model, log loss falls from 0.658318 to 0.658158,
-Brier score falls from 0.233230 to 0.233190, and accuracy rises from 60.22% to
-60.42%: 14 additional correct winners. Four seasons improve log loss; 2025-26
+Against the preceding published model, log loss falls from 0.658318 to 0.658162,
+Brier score falls from 0.233230 to 0.233193, and accuracy rises from 60.22% to
+60.47%: 18 additional correct winners. Four seasons improve log loss; 2025-26
 instead improves winner accuracy by seven games while log loss worsens, a drift
 tradeoff kept visible rather than hidden in the aggregate.
 
@@ -335,9 +335,9 @@ selection score and reported the next two seasons separately:
 | Margin/shrinkage retuning | 0.655722 | 0.668655 | 0.659890 | Retain |
 | Two-season warm-up + 55/45 blend | **0.655477** | **0.668463** | **0.658318** | Retain |
 | Corrected SAT, team only | 0.655319 | 0.668873 | **0.658055** | Retain |
-| + player Elo | 0.655283 | 0.668925 | 0.658164 | Retain for +5 winners |
-| + pair chemistry | 0.655277 | 0.668925 | 0.658160 | Retain for +1 winner |
-| + matchup residual | **0.655273** | 0.668925 | 0.658158 | Retain for +2 winners |
+| + player Elo | 0.655297 | 0.668936 | 0.658165 | Retain for +11 winners |
+| + pair chemistry | 0.655293 | 0.668935 | 0.658162 | Retain for +1 winner |
+| + matchup residual | **0.655292** | 0.668935 | 0.658162 | Retain for proper scores |
 
 An intercept and separate online logit calibrator, faceoff and starter-save
 form, separate fatigue coefficients,
@@ -346,8 +346,8 @@ and extra model-average members were rejected because they failed to improve
 the full validation and later-season gate. The simplest validated model remains
 the shipped model.
 
-The full player/matchup layer adds eight winners over the corrected-SAT team-only
-ablation: three seasons improve, one ties, and 2022-23 gives back two games. It
+The full player/matchup layer adds 12 winners over the corrected-SAT team-only
+ablation: four seasons improve and 2025-26 ties. It
 beats Elo on log loss in every season. The ablation table also shows the cost:
 team-only probabilities have lower aggregate log loss, while the requested
 player, chemistry, and matchup layer supplies the stronger winner classification.
