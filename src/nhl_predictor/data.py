@@ -47,6 +47,8 @@ REPORT_FIELDS = {
     },
     "realtime": {
         "totalShotAttempts": "shot_attempts",
+        "missedShots": "missed_shots",
+        "blockedShots": "blocked_shots",
     },
 }
 TEAM_STAT_FIELDS = tuple(
@@ -200,6 +202,22 @@ def _decode_skaters(value: str) -> tuple[tuple[int, ...], ...]:
     return players
 
 
+def _complete_shot_attempts(stats: dict[tuple[int, str], dict[str, float | None]]) -> None:
+    """Reconstruct older null SAT totals from shots, misses, and opponent blocks."""
+
+    for (game_id, orientation), values in stats.items():
+        if values.get("shot_attempts") is not None:
+            continue
+        opponent = stats.get((game_id, "R" if orientation == "H" else "H"))
+        if opponent is None:
+            raise ValueError(f"missing opponent realtime row for game {game_id}")
+        values["shot_attempts"] = (
+            float(values["shots"])
+            + float(values["missed_shots"])
+            + float(opponent["blocked_shots"])
+        )
+
+
 def _parse_schedule(payload: dict, target_date: str) -> list[dict]:
     """Extract only the requested date from the API's surrounding game week."""
 
@@ -328,7 +346,12 @@ def download_seasons(
             for record in future.result():
                 values = stats.setdefault((int(record["gameId"]), record["homeRoad"]), {})
                 for source, destination in REPORT_FIELDS[report].items():
-                    values[destination] = float(record.get(source) or 0.0)
+                    value = record.get(source)
+                    values[destination] = (
+                        None if report == "realtime" and value is None else float(value or 0.0)
+                    )
+
+    _complete_shot_attempts(stats)
 
     starters: dict[tuple[int, str], dict[str, int]] = {}
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -394,11 +417,12 @@ def download_seasons(
         xg_by_side: dict[str, float | None] = {}
         for side, orientation in (("home", "H"), ("away", "R")):
             game_stats = stats.get((row["game_id"], orientation))
-            if game_stats is None or set(game_stats) != {
+            required_stats = {
                 field.removeprefix(f"{side}_") for field in TEAM_STAT_FIELDS if field.startswith(side)
-            }:
+            }
+            if game_stats is None or not required_stats <= game_stats.keys():
                 raise ValueError(f"incomplete NHL Stats reports for game {row['game_id']} ({side})")
-            row.update({f"{side}_{field}": value for field, value in game_stats.items()})
+            row.update({f"{side}_{field}": game_stats[field] for field in required_stats})
             xg_by_side[side] = expected_goals.get((row["game_id"], orientation))
             starter = starters.get((row["game_id"], orientation))
             if starter is None:

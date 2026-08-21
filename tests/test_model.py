@@ -13,6 +13,7 @@ from nhl_predictor.data import (
     TEAM_STAT_FIELDS,
     XG_FIELDS,
     _aggregate_xg,
+    _complete_shot_attempts,
     _decode_skaters,
     _parse_schedule,
     read_games,
@@ -217,6 +218,16 @@ def test_skater_lineup_parser_validates_and_types_compact_rows() -> None:
     assert _decode_skaters("7:1200:1:2:-1:4") == ((7, 1200, 1, 2, -1, 4),)
     with np.testing.assert_raises_regex(ValueError, "duplicate player"):
         _decode_skaters("7:1200:1:2:-1:4;7:900:0:0:0:1")
+
+
+def test_missing_historical_shot_attempts_are_reconstructed() -> None:
+    stats = {
+        (1, "H"): {"shots": 30.0, "missed_shots": 10.0, "blocked_shots": 8.0, "shot_attempts": None},
+        (1, "R"): {"shots": 25.0, "missed_shots": 7.0, "blocked_shots": 12.0, "shot_attempts": None},
+    }
+    _complete_shot_attempts(stats)
+    assert stats[(1, "H")]["shot_attempts"] == 52.0
+    assert stats[(1, "R")]["shot_attempts"] == 40.0
 
 
 def test_shots_are_compacted_to_game_team_expected_goals() -> None:
