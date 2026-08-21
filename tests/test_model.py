@@ -9,9 +9,12 @@ import numpy as np
 from nhl_predictor.data import (
     FIELDS,
     GOALIE_FIELDS,
+    SKATER_FIELDS,
     TEAM_STAT_FIELDS,
     XG_FIELDS,
     _aggregate_xg,
+    _complete_shot_attempts,
+    _decode_skaters,
     _parse_schedule,
     read_games,
 )
@@ -30,6 +33,49 @@ def test_repeated_wins_raise_probability() -> None:
     after = model.predict("A", "B", day + timedelta(days=12))
     assert before == 0.5
     assert before < after < 1.0
+
+
+def test_matchup_and_player_elos_use_only_prior_games() -> None:
+    model = BayesianPlackettLuce(["A", "B"])
+    day = date(2025, 1, 1)
+    before = model.predict_details("A", "B", day)
+    assert before["matchup_logit"] == 0.0
+    assert before["home_player_elo"] == before["away_player_elo"] == 1500.0
+    game = {
+        "home_skaters": ((1, 1200, 1, 1, 2, 4), (2, 900, 0, 0, 0, 1)),
+        "away_skaters": ((3, 1200, 0, 0, -1, 2), (4, 900, 0, 0, -1, 1)),
+        "home_starter_goalie_id": 5,
+        "home_starter_goals_against": 1,
+        "home_starter_shots_against": 30,
+        "away_starter_goalie_id": 6,
+        "away_starter_goals_against": 3,
+        "away_starter_shots_against": 28,
+    }
+    model.update("A", "B", day, True, game)
+    after = model.predict_details("A", "B", day + timedelta(days=1))
+    assert after["matchup_logit"] > 0.0
+    assert after["home_player_elo"] > after["away_player_elo"]
+    assert after["home_chemistry_elo"] > after["away_chemistry_elo"]
+    assert model.player_elos[1] > model.player_elos[2]
+
+
+def test_goalie_elo_uses_saves_above_average() -> None:
+    model = BayesianPlackettLuce(
+        ["A", "B"], player_k=0.0, raw_effect_scale=1.0, chemistry_k=0.0
+    )
+    game = {
+        "home_skaters": ((1, 1200, 0, 0, 0, 0),),
+        "away_skaters": ((2, 1200, 0, 0, 0, 0),),
+        "home_starter_goalie_id": 3,
+        "home_starter_goals_against": 1,
+        "home_starter_shots_against": 30,
+        "away_starter_goalie_id": 4,
+        "away_starter_goals_against": 3,
+        "away_starter_shots_against": 30,
+    }
+    model.update("A", "B", date(2025, 1, 1), True, game)
+    assert np.isclose(model.player_elos[3], 1501.85)
+    assert np.isclose(model.player_elos[4], 1499.85)
 
 
 def test_rest_feature_only_penalizes_back_to_back_games() -> None:
@@ -97,6 +143,8 @@ def test_model_average_uses_fixed_validation_weights() -> None:
     details = model.predict_details("A", "B", played_on)
     assert details["possession_weight"] == 0.55
     assert details["fast_james_stein_weight"] == 0.45
+    assert details["probability_temperature"] == 1.10
+    assert details["home_win_probability"] > details["uncalibrated_probability"]
     model.update("A", "B", played_on, True)
     assert np.allclose(model.weights, [0.55, 0.45])
 
@@ -191,6 +239,8 @@ def test_enriched_game_csv_is_typed(tmp_path) -> None:
         home_score=3,
         away_score=2,
         xg_available=1,
+        home_skaters="1:1200:1:0:2:4",
+        away_skaters="2:1100:0:1:-1:2",
     )
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=FIELDS)
@@ -201,11 +251,28 @@ def test_enriched_game_csv_is_typed(tmp_path) -> None:
     assert isinstance(parsed["game_id"], int)
     assert isinstance(parsed["xg_available"], int)
     assert all(isinstance(parsed[field], int) for field in GOALIE_FIELDS)
+    assert all(isinstance(parsed[field], tuple) for field in SKATER_FIELDS)
     assert all(isinstance(parsed[field], float) for field in (*TEAM_STAT_FIELDS, *XG_FIELDS))
 
     metadata = _file_metadata(str(path))
     assert metadata["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
     assert metadata["bytes"] == path.stat().st_size
+
+
+def test_skater_lineup_parser_validates_and_types_compact_rows() -> None:
+    assert _decode_skaters("7:1200:1:2:-1:4") == ((7, 1200, 1, 2, -1, 4),)
+    with np.testing.assert_raises_regex(ValueError, "duplicate player"):
+        _decode_skaters("7:1200:1:2:-1:4;7:900:0:0:0:1")
+
+
+def test_missing_historical_shot_attempts_are_reconstructed() -> None:
+    stats = {
+        (1, "H"): {"shots": 30.0, "missed_shots": 10.0, "blocked_shots": 8.0, "shot_attempts": None},
+        (1, "R"): {"shots": 25.0, "missed_shots": 7.0, "blocked_shots": 12.0, "shot_attempts": None},
+    }
+    _complete_shot_attempts(stats)
+    assert stats[(1, "H")]["shot_attempts"] == 52.0
+    assert stats[(1, "R")]["shot_attempts"] == 40.0
 
 
 def test_shots_are_compacted_to_game_team_expected_goals() -> None:
