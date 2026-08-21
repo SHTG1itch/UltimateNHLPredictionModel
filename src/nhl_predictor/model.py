@@ -246,6 +246,7 @@ class BayesianPlackettLuce:
         skater_elo = sum(weight * self.player_elos[player] for player, weight in skaters)
         player_elo = 0.8 * skater_elo + 0.2 * self.player_elos[goalie] if goalie else skater_elo
         players = [player for player, _ in skaters] + ([goalie] if goalie else [])
+        # ponytail: NHL lineups are ~19; use sparse recent pairs if rosters grow.
         pairs = [tuple(sorted((first, second))) for i, first in enumerate(players) for second in players[i + 1 :]]
         chemistry = sum(self.chemistry_elos[pair] for pair in pairs) / len(pairs) if pairs else 0.0
         return player_elo, chemistry
@@ -467,7 +468,7 @@ class BayesianPlackettLuce:
             if goalie is not None:
                 shots = float(game.get(f"{side}_starter_shots_against", 0))
                 goals = float(game.get(f"{side}_starter_goals_against", 0))
-                saves_above_average = 0.905 * shots - goals
+                saves_above_average = 0.095 * shots - goals
                 self.player_elos[goalie] += (
                     1.5 * self.player_k * direction * residual
                     + self.raw_effect_scale * float(np.clip(saves_above_average, -3.0, 3.0))
@@ -755,6 +756,9 @@ def backtest(
             f"final_{name}_weight": float(weight)
             for name, weight in zip(model.names, model.weights, strict=True)
         })
+        metrics["final_player_elos"] = float(len(model.members[0].player_elos))
+        metrics["final_chemistry_pairs"] = float(len(model.members[0].chemistry_elos))
+        metrics["final_probability_temperature"] = model.probability_temperature
     # Flat per-season keys keep the CLI JSON easy to consume while exposing
     # regime drift that one aggregate score can hide.
     if all("season" in row for row in predictions):

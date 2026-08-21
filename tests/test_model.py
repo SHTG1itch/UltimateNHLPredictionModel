@@ -59,6 +59,25 @@ def test_matchup_and_player_elos_use_only_prior_games() -> None:
     assert model.player_elos[1] > model.player_elos[2]
 
 
+def test_goalie_elo_uses_saves_above_average() -> None:
+    model = BayesianPlackettLuce(
+        ["A", "B"], player_k=0.0, raw_effect_scale=1.0, chemistry_k=0.0
+    )
+    game = {
+        "home_skaters": ((1, 1200, 0, 0, 0, 0),),
+        "away_skaters": ((2, 1200, 0, 0, 0, 0),),
+        "home_starter_goalie_id": 3,
+        "home_starter_goals_against": 1,
+        "home_starter_shots_against": 30,
+        "away_starter_goalie_id": 4,
+        "away_starter_goals_against": 3,
+        "away_starter_shots_against": 30,
+    }
+    model.update("A", "B", date(2025, 1, 1), True, game)
+    assert np.isclose(model.player_elos[3], 1501.85)
+    assert np.isclose(model.player_elos[4], 1499.85)
+
+
 def test_rest_feature_only_penalizes_back_to_back_games() -> None:
     model = BayesianPlackettLuce(["A", "B"])
     played_on = date(2025, 1, 4)
