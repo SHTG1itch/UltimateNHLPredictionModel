@@ -5,28 +5,34 @@ is one completed NHL regular-season or playoff game. Keeping downloads out of
 history makes the repository reproducible and prevents its size from growing
 toward the hard 10 GB limit.
 
-Generate the five-season development set with:
+Generate the seven-season training and evaluation set with:
 
 ```powershell
-nhl-predict download --seasons 20212022 20222023 20232024 20242025 20252026
+nhl-predict download --seasons 20192020 20202021 20212022 20222023 20232024 20242025 20252026
 ```
 
 The downloader requests team schedules concurrently, deduplicates by official
 game ID, removes preseason games, and sorts by official UTC start time. It also
-downloads four league-wide per-game NHL Stats reports and joins them by game ID
-plus home/road orientation. It also aggregates MoneyPuck's listed shot archives
-to team-game expected-goal sums. It never imputes incomplete report rows.
+downloads four league-wide team reports plus goalie and skater game reports and
+joins them by game ID plus home/road orientation. Monthly skater queries stay
+below the Stats API's 10,000-row cap. It also aggregates MoneyPuck's listed shot
+archives to team-game expected-goal sums. It never imputes incomplete rows.
 
 These team statistics are post-game facts. The walk-forward model updates form
 with them only after forecasting that game, which prevents target leakage.
+Skater participation is treated the same way: a forecast uses the last observed
+lineup, then the current lineup updates player and chemistry Elo after the game.
 
 ## Schema
 
 Identity/time columns are `game_id`, `season`, `game_type`, `game_date`, and
 `start_time_utc`. Outcome columns are the home/away abbreviations and final
-scores plus an overtime indicator. Each team then has eight post-game fields:
+scores plus an overtime indicator. Each team then has post-game strategy,
+starter, and skater fields:
 
 - `shots` and `shot_attempts` measure on-target volume and broader possession.
+  NHL leaves `totalShotAttempts` null before 2022-23, so those historical totals
+  are reconstructed exactly as shots + missed shots + opponent blocked shots.
 - `faceoff_pct` is retained for later audited feature experiments.
 - `pp_goals` and `pp_opportunities` are power-play scoring sufficient stats.
 - `pk_goals_against` and `times_shorthanded` are penalty-kill sufficient stats.
@@ -36,6 +42,9 @@ scores plus an overtime indicator. Each team then has eight post-game fields:
 - `starter_goalie_id`, `starter_time_on_ice`, `starter_goals_against`, and
   `starter_shots_against` describe the actual starter after the game. They may
   update goalie history but may never be read as a same-game pregame feature.
+- `skaters` packs each participating skater's player ID, time on ice, goals,
+  assists, plus/minus, and shots. The compact cell is parsed into typed tuples;
+  duplicate IDs and malformed records fail validation.
 
 `read_games()` converts IDs, scores, and flags to integers and every team stat
 to floating point. Missing columns raise `ValueError`; malformed or partial API
@@ -53,6 +62,7 @@ scrape unlisted pages or save redistributed raw shot data.
 ## Storage policy
 
 Only the merged CSV is kept locally. Raw JSON responses, play-by-play event
-blobs, model artifacts, and prediction ledgers are not committed. Both
+blobs, model artifacts, and prediction ledgers are not committed. The current
+seven-season file is about 8.8 MB. Both
 `data/*.csv` and `artifacts/` are ignored, preventing repeated experiments from
 inflating repository history toward the 10 GB limit.

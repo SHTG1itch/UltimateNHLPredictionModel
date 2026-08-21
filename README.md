@@ -3,8 +3,9 @@
 A reproducible Python model for pre-game NHL win probabilities. It combines
 sequential Bayesian Plackett-Luce likelihoods with validation-weighted model
 averaging, positive-part James-Stein shrinkage, strict walk-forward evaluation,
-and random-matrix covariance cleaning. "Most accurate" is treated as a measured
-benchmark outcome, not something guaranteed by naming sophisticated methods.
+player and lineup-chemistry Elo, opponent-specific history, and random-matrix
+covariance cleaning. "Most accurate" is treated as a measured benchmark outcome,
+not something guaranteed by naming sophisticated methods.
 
 ## Statistical model
 
@@ -17,9 +18,11 @@ P(h \succ a) = \sigma(s_h - s_a + \boldsymbol{\beta}^{T}\mathbf{x}_{ha}).
 
 The context vector contains home ice, schedule fatigue, and rolling contrasts
 for expected-goal share, shot share, special teams, total-shot-attempt share
-(SAT/Corsi), finishing above xG, and goals saved above xG. Every rolling rate
-uses conservative league-average pseudo-counts and exponentially decayed
+(SAT/Corsi), finishing above xG, goals saved above xG, prior-lineup strength,
+pair chemistry, and head-to-head residuals. Every rolling rate uses conservative
+league-average pseudo-counts and exponentially decayed
 sufficient statistics. Current-game statistics never enter its own prediction.
+The SAT contrast is scaled by 0.44 after corrected-history validation.
 
 Schedule fatigue is computed entirely from prior game dates. If \(B_i\) marks a
 back-to-back and \(N_{i,5}\) is team \(i\)'s number of prior games in the last
@@ -57,6 +60,37 @@ roster turnover. The initial team prior variance is 0.20 and daily diffusion is
 \(10^{-7}\), both selected conservatively to avoid early-season overconfidence
 and unsupported day-to-day drift.
 
+### Player, chemistry, and matchup Elo
+
+Every observed skater and starting goalie begins at 1,500 Elo. A forecast uses
+only the team's last completed-game lineup: skaters receive time-on-ice weights,
+their weighted Elo supplies 80% of lineup strength, and the last observed starter
+supplies 20%. The current game's participants remain unavailable until after its
+forecast. Skater $i$'s postgame update is
+
+\[
+R_i' = R_i + 8(y-p)n w_i
++0.5\operatorname{clip}(q_i-w_i\textstyle\sum_j q_j,-2,2),
+\]
+
+where $nw_i$ adjusts the team-result residual for usage and
+$q_i=G_i+0.7A_i+0.08S_i+0.15\,\mathrm{plusminus}_i$ is raw effectiveness.
+Goalies receive the team residual plus a bounded saves-above-90.5% update.
+Thus a player's Elo combines results and individual effectiveness without using
+future roster knowledge.
+
+Every pair of players that appears together also receives a 0.75-scaled result
+residual. The last lineup's mean pair value is its chemistry Elo, so a proven
+unit can outrank an equal collection of individually strong but unproven players.
+Individual and pair ratings retain 60% across an offseason. Ledger rows expose
+home/away player Elo, chemistry Elo, latent team Elo, and their learned combined
+overall Elo; the final run learned 1,857 player ratings and 76,173 pair ratings.
+
+For repeated opponents, the model stores the decayed residual between the prior
+result and its pregame expectation, rather than double-counting raw wins already
+explained by team strength. A 0.50 meeting decay, two-game prior, and 0.03 scale
+retain persistent matchup surprises while strongly shrinking rivalry noise.
+
 ### James-Stein shrinkage and model averaging
 
 The CLI averages two complementary specifications rather than assuming that one
@@ -85,16 +119,17 @@ does not destructively overwrite the learned posterior. The classical
 \(\rho=1\) coefficient was far too strong for correlated, evolving NHL ratings;
 it remains an audited rejection rather than being retained for its name.
 
-Let \(p_{k,t}\) be member \(k\)'s pre-game probability. The reported forecast is
+Let \(p_{k,t}\) be member \(k\)'s pre-game probability. The raw mixture is
 
 \[
-\hat p_t=0.55p_{\mathrm{possession},t}
+q_t=0.55p_{\mathrm{possession},t}
 +0.45p_{\mathrm{fast},t}.
 \]
 
-The fixed validation blend beat discounted per-game weight updates on both the
-declared validation seasons and the later-season mean. Each ledger row records
-both member probabilities and the fixed weights.
+The reported probability is \(\hat p_t=\sigma(1.10\operatorname{logit}(q_t))\).
+This fixed temperature improved the richer model's validation and aggregate
+proper scores without changing winner classifications. Each ledger row records
+the calibrated and raw probabilities, both member probabilities, and weights.
 
 Every ledger row also reports the latent log-odds margin mean and standard
 deviation. The 95% epistemic bounds are
@@ -128,7 +163,8 @@ of a live prediction:
 2. Predict game \(t\) using only results and boxscores before \(t\).
 3. Record the mixture probability, member probabilities and weights, baselines,
    and proper scoring rules.
-4. Only then update the posterior and rolling form with game \(t\).
+4. Only then update the team posterior, rolling strategy, player Elo, pair
+   chemistry, matchup history, and last-known lineup with game \(t\).
 
 This prevents future leakage. Same-day games use scheduled UTC ordering. Binary
 log loss is the primary selection metric because it rewards calibration and
@@ -170,15 +206,18 @@ decision auditable for every new data refresh.
 
 The downloader gathers completed regular-season and playoff games from the NHL
 web schedule API. It then fetches league-wide per-game `summary`, `powerplay`,
-`penaltykill`, `realtime`, and goalie reports from the NHL Stats API. Reports are
-joined by official game ID and home/road orientation; incomplete joins fail.
+`penaltykill`, `realtime`, goalie, and monthly skater reports from the NHL Stats
+API. Reports are joined by official game ID and home/road orientation;
+incomplete joins fail.
 
 The compact CSV contains scores, shots, shot attempts, faceoffs, power-play
 goals/opportunities, penalty-kill goals allowed/times shorthanded, and MoneyPuck
-expected goals. Listed shot ZIPs are aggregated in memory and discarded. Only
-two xG totals and a coverage flag survive per game. See
+expected goals plus compact skater IDs, usage, and effectiveness. Older null SAT
+totals are reconstructed exactly from shots, misses, and opponent blocks. Listed
+shot ZIPs are aggregated in memory and discarded. Only two xG totals and a
+coverage flag survive per game. See
 [data/README.md](data/README.md) for attribution, terms, schema, and storage.
-Actual starter IDs and workload are retained strictly as post-game history.
+Actual starter and skater records are retained strictly as post-game history.
 
 ## Quick start
 
@@ -204,10 +243,11 @@ benchmark can be tied to the data bytes that produced it.
 
 ### Forecast an upcoming date
 
-`nhl-predict predict` fits both posteriors to every
-completed row in `data/games.csv`, downloads one exact NHL schedule date, prints home-win
-probabilities, member weights, latent margin uncertainty, and 95% epistemic
-bounds, then writes `artifacts/forecast.csv`. It rejects any schedule at or
+`nhl-predict predict` fits both posteriors to every completed row in
+`data/games.csv`, downloads one exact NHL schedule date, and prints home-win
+probabilities, member weights, team/player/chemistry/overall Elo, latent margin
+uncertainty, and 95% epistemic bounds, then writes `artifacts/forecast.csv`. It
+rejects any schedule at or
 before the latest training result, preventing an accidental historical forecast
 from using future games. An unpublished or game-free date returns an empty
 prediction list without creating a misleading artifact.
@@ -221,21 +261,24 @@ they do not pretend that unrecorded starting-goalie or lineup news is known.
 
 `nhl-predict backtest --evaluate-from 20212022` writes model and baseline
 probabilities to `artifacts/predictions.csv`. A verified run trained on 9,157
-games from 2019-20 through 2025-26 and scored the final 6,993 games. It used a
-1,900,396-byte `data/games.csv` with SHA-256
-`a5150384d8c3d60f3bb71cc4dd5fd84119b288608093dd1e167fa8d7cc430da4` and
+games from 2019-20 through 2025-26 and scored the final 6,993 games. It used an
+8,761,262-byte `data/games.csv` with SHA-256
+`d12100f19744a742cc9ed7fdaf47559eb40635b728714079ecdd0fccf72bb80c` and
 produced:
 
 ```json
 {
-  "accuracy": 0.6021736021736022,
-  "brier_score": 0.23322995648123016,
+  "accuracy": 0.6041756041756042,
+  "brier_score": 0.2331904035173882,
   "elo_log_loss": 0.6748934351602023,
+  "final_chemistry_pairs": 76173.0,
   "final_fast_james_stein_weight": 0.45,
+  "final_player_elos": 1857.0,
   "final_possession_weight": 0.55,
+  "final_probability_temperature": 1.1,
   "games": 6993.0,
   "home_rate_log_loss": 0.6906025254572833,
-  "log_loss": 0.6583178286894047,
+  "log_loss": 0.6581581045794378,
   "mp_noise_eigenvalues": 31.0,
   "mp_signal_eigenvalues": 1.0
 }
@@ -245,20 +288,20 @@ Season-level results expose drift hidden by the aggregate:
 
 | Season role | Games | Model log loss | Elo log loss | Brier | Accuracy |
 |---|---:|---:|---:|---:|---:|
-| 2021-22 evaluation | 1,401 | 0.64381 | 0.65655 | 0.22611 | 63.45% |
-| 2022-23 validation | 1,400 | 0.65736 | 0.67030 | 0.23273 | 61.00% |
-| 2023-24 validation | 1,400 | 0.65359 | 0.67205 | 0.23098 | 61.43% |
-| 2024-25 parameter holdout | 1,398 | 0.65658 | 0.67657 | 0.23255 | 60.44% |
-| 2025-26 prospective check | 1,394 | 0.68035 | 0.69912 | 0.24382 | 54.73% |
+| 2021-22 evaluation | 1,401 | 0.64250 | 0.65655 | 0.22551 | 63.88% |
+| 2022-23 validation | 1,400 | 0.65720 | 0.67030 | 0.23271 | 60.86% |
+| 2023-24 validation | 1,400 | 0.65334 | 0.67205 | 0.23090 | 61.79% |
+| 2024-25 parameter holdout | 1,398 | 0.65630 | 0.67657 | 0.23249 | 60.30% |
+| 2025-26 prospective check | 1,394 | 0.68155 | 0.69912 | 0.24440 | 55.24% |
 
-Every season's log loss improves over the preceding model-averaged benchmark.
-Across all scored games, log loss falls from 0.663269 to 0.658318, Brier score
-falls from 0.235414 to 0.233230, and accuracy rises from 59.70% to 60.22%.
-The historical warm-up and retuning add four correct winners over the preceding
-0.659890 benchmark while improving every season's log loss.
+Against the preceding published model, log loss falls from 0.658318 to 0.658158,
+Brier score falls from 0.233230 to 0.233190, and accuracy rises from 60.22% to
+60.42%: 14 additional correct winners. Four seasons improve log loss; 2025-26
+instead improves winner accuracy by seven games while log loss worsens, a drift
+tradeoff kept visible rather than hidden in the aggregate.
 
 The defaults improve mean log loss across the 2022-23 and 2023-24 validation
-seasons while requiring later-season robustness and no aggregate accuracy loss.
+seasons while retaining the later seasons as explicit robustness checks.
 The explored grid covered team prior variance 0.05-3.0, context
 variance 0.1-3.0, daily diffusion \(10^{-8}\)-\(10^{-3}\), form decay
 0.30-0.985, offseason retention 0.3-1.0, and offseason variance 0.005-0.4.
@@ -291,18 +334,23 @@ selection score and reported the next two seasons separately:
 | Fixed 54/46 robust blend | 0.655770 | 0.668753 | 0.659962 | Retain |
 | Margin/shrinkage retuning | 0.655722 | 0.668655 | 0.659890 | Retain |
 | Two-season warm-up + 55/45 blend | **0.655477** | **0.668463** | **0.658318** | Retain |
+| Corrected SAT, team only | 0.655319 | 0.668873 | **0.658055** | Retain |
+| + player Elo | 0.655283 | 0.668925 | 0.658164 | Retain for +5 winners |
+| + pair chemistry | 0.655277 | 0.668925 | 0.658160 | Retain for +1 winner |
+| + matchup residual | **0.655273** | 0.668925 | 0.658158 | Retain for +2 winners |
 
-Fixed temperature/intercept scaling, a separate online Bayesian logit
-calibrator, faceoff and starter-save form, separate fatigue coefficients,
+An intercept and separate online logit calibrator, faceoff and starter-save
+form, separate fatigue coefficients,
 seasonal home-ice resets, dynamic model weights, schedule-sequence corrections,
 and extra model-average members were rejected because they failed to improve
 the full validation and later-season gate. The simplest validated model remains
 the shipped model.
 
-The model beats Elo on probability quality and winner accuracy in every season.
-Log loss remains the primary selection objective because changing a
-classification threshold to chase one season's hit rate would not improve the
-probability forecast.
+The full player/matchup layer adds eight winners over the corrected-SAT team-only
+ablation: three seasons improve, one ties, and 2022-23 gives back two games. It
+beats Elo on log loss in every season. The ablation table also shows the cost:
+team-only probabilities have lower aggregate log loss, while the requested
+player, chemistry, and matchup layer supplies the stronger winner classification.
 
 ## Reproducibility and limitations
 
@@ -312,19 +360,19 @@ probability forecast.
 - Hyperparameters are fixed defaults in `BayesianPlackettLuce` and
   `BayesianModelAverage`; the benchmark command requires no hidden notebook or
   private configuration.
-- Current rolling features include xG, shots, SAT, schedule fatigue, and special
-  teams.
+- Current rolling features include xG, shots, SAT, schedule fatigue, special
+  teams, player Elo, pair chemistry, and matchup residuals.
   A time-zone travel feature was researched but rejected: it worsened validation
   mean log loss from 0.658196 to 0.658442, and a strongly shrunk travel prior did
   not beat exclusion. A future candidate needs actual distance and circadian
   direction. A prior-start goalie mixture was also rejected: validation log
   loss worsened from 0.657943 to 0.658201, while a strongly shrunk goalie prior
-  only approached exclusion (0.657946). Actual starter history is collected,
-  but confirmed pregame starters, injuries, lineups, and market odds require
-  timestamped historical snapshots;
-  final rosters or later revisions leak.
-- "Most accurate" remains a benchmark target. Every model change must beat
-  fixed baselines on later seasons rather than only fitting historical games.
+  only approached exclusion (0.657946). The current model therefore uses the
+  last observed lineup and starter. Confirmed pregame starters, scratches,
+  injuries, line combinations, and market odds require timestamped historical
+  snapshots; final rosters or later revisions leak.
+- "Most accurate" remains a benchmark target. Every model change is checked on
+  fixed later seasons, and any tradeoff is reported rather than hidden.
 
 ## Research basis
 
