@@ -35,6 +35,30 @@ def test_repeated_wins_raise_probability() -> None:
     assert before < after < 1.0
 
 
+def test_matchup_and_player_elos_use_only_prior_games() -> None:
+    model = BayesianPlackettLuce(["A", "B"])
+    day = date(2025, 1, 1)
+    before = model.predict_details("A", "B", day)
+    assert before["matchup_logit"] == 0.0
+    assert before["home_player_elo"] == before["away_player_elo"] == 1500.0
+    game = {
+        "home_skaters": ((1, 1200, 1, 1, 2, 4), (2, 900, 0, 0, 0, 1)),
+        "away_skaters": ((3, 1200, 0, 0, -1, 2), (4, 900, 0, 0, -1, 1)),
+        "home_starter_goalie_id": 5,
+        "home_starter_goals_against": 1,
+        "home_starter_shots_against": 30,
+        "away_starter_goalie_id": 6,
+        "away_starter_goals_against": 3,
+        "away_starter_shots_against": 28,
+    }
+    model.update("A", "B", day, True, game)
+    after = model.predict_details("A", "B", day + timedelta(days=1))
+    assert after["matchup_logit"] > 0.0
+    assert after["home_player_elo"] > after["away_player_elo"]
+    assert after["home_chemistry_elo"] > after["away_chemistry_elo"]
+    assert model.player_elos[1] > model.player_elos[2]
+
+
 def test_rest_feature_only_penalizes_back_to_back_games() -> None:
     model = BayesianPlackettLuce(["A", "B"])
     played_on = date(2025, 1, 4)
@@ -100,6 +124,8 @@ def test_model_average_uses_fixed_validation_weights() -> None:
     details = model.predict_details("A", "B", played_on)
     assert details["possession_weight"] == 0.55
     assert details["fast_james_stein_weight"] == 0.45
+    assert details["probability_temperature"] == 1.10
+    assert details["home_win_probability"] > details["uncalibrated_probability"]
     model.update("A", "B", played_on, True)
     assert np.allclose(model.weights, [0.55, 0.45])
 

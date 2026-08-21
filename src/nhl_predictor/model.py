@@ -77,6 +77,15 @@ class BayesianPlackettLuce:
         overtime_credit: float = 1.0,
         margin_scale: float = 0.0,
         james_stein_scale: float = 0.0,
+        matchup_decay: float = 0.50,
+        matchup_prior: float = 2.0,
+        matchup_scale: float = 0.03,
+        player_k: float = 8.0,
+        raw_effect_scale: float = 0.50,
+        chemistry_k: float = 0.75,
+        player_scale: float = 1.0,
+        chemistry_scale: float = 1.0,
+        sat_scale: float = 0.44,
     ) -> None:
         unique_teams = sorted(set(teams))
         if len(unique_teams) < 2:
@@ -98,6 +107,10 @@ class BayesianPlackettLuce:
             raise ValueError("margin_scale cannot be negative")
         if james_stein_scale < 0.0:
             raise ValueError("james_stein_scale cannot be negative")
+        if not 0.0 < matchup_decay <= 1.0 or matchup_prior <= 0.0 or matchup_scale < 0.0:
+            raise ValueError("matchup decay and prior must be positive")
+        if min(player_k, raw_effect_scale, chemistry_k, player_scale, chemistry_scale, sat_scale) < 0.0:
+            raise ValueError("feature scales cannot be negative")
         if not form_features or len(set(form_features)) != len(form_features):
             raise ValueError("form_features must contain unique feature names")
         unknown_features = set(form_features) - set(FORM_FEATURES)
@@ -110,7 +123,7 @@ class BayesianPlackettLuce:
         # Every selected form contrast gets one Bayesian coefficient after the
         # fixed home-ice and rest terms.
         self.form_features = form_features
-        self.context_count = 2 + len(form_features)
+        self.context_count = 5 + len(form_features)
         dimension = self.team_count + self.context_count
         self.mean = np.zeros(dimension)
         variances = (
@@ -128,6 +141,19 @@ class BayesianPlackettLuce:
         self.overtime_credit = overtime_credit
         self.margin_scale = margin_scale
         self.james_stein_scale = james_stein_scale
+        self.matchup_decay = matchup_decay
+        self.matchup_prior = matchup_prior
+        self.matchup_scale = matchup_scale
+        self.matchups: dict[tuple[str, str], list[float]] = {}
+        self.player_k = player_k
+        self.raw_effect_scale = raw_effect_scale
+        self.chemistry_k = chemistry_k
+        self.player_scale = player_scale
+        self.chemistry_scale = chemistry_scale
+        self.sat_scale = sat_scale
+        self.player_elos: defaultdict[int, float] = defaultdict(lambda: 1500.0)
+        self.chemistry_elos: defaultdict[tuple[int, int], float] = defaultdict(float)
+        self.lineups: dict[str, tuple[tuple[tuple[int, float], ...], int | None]] = {}
         # Columns hold GF, GA, SF, SA, PP goals/opportunities, PP goals allowed,
         # times shorthanded, shot attempts for/against, xGF/xGA, and goals
         # for/against in xG-covered games. They are decayed sufficient stats.
@@ -189,6 +215,7 @@ class BayesianPlackettLuce:
             name: _logit(home_rates[name]) - _logit(away_rates[name])
             for name in rate_names
         }
+        features["sat_share"] *= self.sat_scale
         # PP and PK are combined into one team special-teams strength feature;
         # keeping both separately would add two highly collinear coefficients.
         features["special_teams"] = (
@@ -201,6 +228,28 @@ class BayesianPlackettLuce:
             features[name] = home_rates[name] - away_rates[name]
         return np.clip([features[name] for name in self.form_features], -2.0, 2.0)
 
+    def _matchup_feature(self, home: str, away: str) -> float:
+        """Return prior-smoothed head-to-head log-odds from earlier meetings."""
+
+        first, second = sorted((home, away))
+        residual, meetings = self.matchups.get((first, second), (0.0, 0.0))
+        signal = residual / (meetings + self.matchup_prior)
+        return self.matchup_scale * (signal if home == first else -signal)
+
+    def _player_context(self, team: str) -> tuple[float, float]:
+        """Return last-known lineup Elo and pair chemistry without current-game data."""
+
+        lineup = self.lineups.get(team)
+        if lineup is None:
+            return 1500.0, 0.0
+        skaters, goalie = lineup
+        skater_elo = sum(weight * self.player_elos[player] for player, weight in skaters)
+        player_elo = 0.8 * skater_elo + 0.2 * self.player_elos[goalie] if goalie else skater_elo
+        players = [player for player, _ in skaters] + ([goalie] if goalie else [])
+        pairs = [tuple(sorted((first, second))) for i, first in enumerate(players) for second in players[i + 1 :]]
+        chemistry = sum(self.chemistry_elos[pair] for pair in pairs) / len(pairs) if pairs else 0.0
+        return player_elo, chemistry
+
     def _features(self, home: str, away: str, played_on: date) -> NDArray[np.float64]:
         """Build the sparse comparison vector for one game."""
 
@@ -211,7 +260,17 @@ class BayesianPlackettLuce:
         features[self.index[away]] = -1.0
         features[self.team_count] = 1.0  # Constant home-ice log-worth advantage.
         features[self.team_count + 1] = self._rest_feature(home, away, played_on)
-        features[self.team_count + 2 :] = self._form_features(home, away)
+        features[self.team_count + 2] = self._matchup_feature(home, away)
+        home_player, home_chemistry = self._player_context(home)
+        away_player, away_chemistry = self._player_context(away)
+        elo_to_logit = log(10.0) / 400.0
+        features[self.team_count + 3] = self.player_scale * elo_to_logit * (
+            home_player - away_player
+        )
+        features[self.team_count + 4] = self.chemistry_scale * elo_to_logit * (
+            home_chemistry - away_chemistry
+        )
+        features[self.team_count + 5 :] = self._form_features(home, away)
         return features
 
     def start_new_season(self) -> None:
@@ -221,6 +280,13 @@ class BayesianPlackettLuce:
         team_slice = np.s_[: self.team_count, : self.team_count]
         self.covariance[team_slice] += np.eye(self.team_count) * self.offseason_variance
         self.form *= self.offseason_retention
+        for history in self.matchups.values():
+            history[0] *= self.offseason_retention
+            history[1] *= self.offseason_retention
+        for player, rating in self.player_elos.items():
+            self.player_elos[player] = 1500.0 + self.offseason_retention * (rating - 1500.0)
+        for pair in self.chemistry_elos:
+            self.chemistry_elos[pair] *= self.offseason_retention
         # Offseason duration is not meaningful game rest, so opening-day rest
         # contrasts begin neutral for every team.
         self.last_played.clear()
@@ -292,6 +358,13 @@ class BayesianPlackettLuce:
         # MacKay's logistic-Gaussian approximation integrates parameter
         # uncertainty instead of pretending the posterior mean is exact.
         adjusted_margin = margin_mean / sqrt(1.0 + pi * margin_variance / 8.0)
+        home_player, home_chemistry = self._player_context(home)
+        away_player, away_chemistry = self._player_context(away)
+        elo_per_logit = 400.0 / log(10.0)
+        player_coefficient = self.mean[self.team_count + 3]
+        chemistry_coefficient = self.mean[self.team_count + 4]
+        home_team_elo = 1500.0 + elo_per_logit * team_mean[self.index[home]]
+        away_team_elo = 1500.0 + elo_per_logit * team_mean[self.index[away]]
         # Transforming Gaussian margin quantiles gives an epistemic interval for
         # the underlying win propensity. It is not a frequentist game-outcome CI.
         return {
@@ -299,6 +372,19 @@ class BayesianPlackettLuce:
             "latent_margin_mean": margin_mean,
             "latent_margin_sd": margin_sd,
             "james_stein_factor": james_stein_factor,
+            "matchup_logit": self._matchup_feature(home, away),
+            "home_player_elo": home_player,
+            "away_player_elo": away_player,
+            "home_chemistry_elo": home_chemistry,
+            "away_chemistry_elo": away_chemistry,
+            "home_team_elo": home_team_elo,
+            "away_team_elo": away_team_elo,
+            "home_overall_elo": home_team_elo
+            + player_coefficient * self.player_scale * (home_player - 1500.0)
+            + chemistry_coefficient * self.chemistry_scale * home_chemistry,
+            "away_overall_elo": away_team_elo
+            + player_coefficient * self.player_scale * (away_player - 1500.0)
+            + chemistry_coefficient * self.chemistry_scale * away_chemistry,
             "home_win_epistemic_lower": _sigmoid(margin_mean - 1.96 * margin_sd),
             "home_win_epistemic_upper": _sigmoid(margin_mean + 1.96 * margin_sd),
         }
@@ -352,6 +438,50 @@ class BayesianPlackettLuce:
         self.form[home_index] += home_stats
         self.form[away_index] += away_stats
 
+    def _update_players(self, home: str, away: str, residual: float, game: dict) -> None:
+        """Update individual Elo, raw effectiveness, and pair chemistry postgame."""
+
+        if not all(f"{side}_skaters" in game for side in ("home", "away")):
+            return
+        for side, team, direction in (("home", home, 1.0), ("away", away, -1.0)):
+            skaters = game[f"{side}_skaters"]
+            if not skaters:
+                continue
+            total_toi = sum(player[1] for player in skaters)
+            if total_toi <= 0:
+                continue
+            weights = tuple((player[0], player[1] / total_toi) for player in skaters)
+            raw_scores = np.array(
+                [player[2] + 0.7 * player[3] + 0.08 * player[5] + 0.15 * player[4] for player in skaters]
+            )
+            expected_scores = raw_scores.sum() * np.array([weight for _, weight in weights])
+            for (player, weight), raw_residual in zip(
+                weights, raw_scores - expected_scores, strict=True
+            ):
+                self.player_elos[player] += (
+                    self.player_k * direction * residual * len(weights) * weight
+                    + self.raw_effect_scale * float(np.clip(raw_residual, -2.0, 2.0))
+                )
+
+            goalie = int(game.get(f"{side}_starter_goalie_id") or 0) or None
+            if goalie is not None:
+                shots = float(game.get(f"{side}_starter_shots_against", 0))
+                goals = float(game.get(f"{side}_starter_goals_against", 0))
+                saves_above_average = 0.905 * shots - goals
+                self.player_elos[goalie] += (
+                    1.5 * self.player_k * direction * residual
+                    + self.raw_effect_scale * float(np.clip(saves_above_average, -3.0, 3.0))
+                )
+
+            players = [player for player, _ in weights] + ([goalie] if goalie else [])
+            if self.chemistry_k:
+                for i, first in enumerate(players):
+                    for second in players[i + 1 :]:
+                        self.chemistry_elos[tuple(sorted((first, second)))] += (
+                            self.chemistry_k * direction * residual
+                        )
+            self.lineups[team] = (weights, goalie)
+
     def update(
         self,
         home: str,
@@ -400,7 +530,13 @@ class BayesianPlackettLuce:
         self.last_played[away] = played_on
         self.recent_games[home].append(played_on)
         self.recent_games[away].append(played_on)
+        first, second = sorted((home, away))
+        history = self.matchups.setdefault((first, second), [0.0, 0.0])
+        first_residual = residual if home == first else -residual
+        history[0] = history[0] * self.matchup_decay + first_residual
+        history[1] = history[1] * self.matchup_decay + 1.0
         if game is not None:
+            self._update_players(home, away, residual, game)
             self._update_form(home, away, game)
 
 
@@ -410,8 +546,12 @@ class BayesianModelAverage:
     def __init__(
         self,
         teams: Iterable[str],
+        *,
+        probability_temperature: float = 1.10,
         **model_options: float,
     ) -> None:
+        if probability_temperature <= 0.0:
+            raise ValueError("probability_temperature must be positive")
         teams = tuple(teams)
         specifications = (
             {
@@ -432,6 +572,7 @@ class BayesianModelAverage:
             for specification in specifications
         ]
         self.weights = np.array([0.55, 0.45])
+        self.probability_temperature = probability_temperature
 
     @property
     def spectral_diagnostics(self) -> SpectralDiagnostics | None:
@@ -465,8 +606,13 @@ class BayesianModelAverage:
         margin_sd = sqrt(max(float(
             weights @ (margin_variances + margin_means**2) - margin_mean**2
         ), 0.0))
+        uncalibrated_probability = float(weights @ probabilities)
         result = {
-            "home_win_probability": float(weights @ probabilities),
+            "home_win_probability": _sigmoid(
+                self.probability_temperature * _logit(uncalibrated_probability)
+            ),
+            "uncalibrated_probability": uncalibrated_probability,
+            "probability_temperature": self.probability_temperature,
             "latent_margin_mean": margin_mean,
             "latent_margin_sd": margin_sd,
             "home_win_epistemic_lower": _sigmoid(margin_mean - 1.96 * margin_sd),
@@ -480,6 +626,14 @@ class BayesianModelAverage:
         for index, name in enumerate(self.names):
             result[f"{name}_probability"] = float(probabilities[index])
             result[f"{name}_weight"] = float(weights[index])
+        for key in (
+            "matchup_logit",
+            "home_player_elo", "away_player_elo",
+            "home_chemistry_elo", "away_chemistry_elo",
+            "home_team_elo", "away_team_elo",
+            "home_overall_elo", "away_overall_elo",
+        ):
+            result[key] = float(weights @ np.array([details[key] for details in member_details]))
         return result
 
     def predict(self, home: str, away: str, played_on: date) -> float:
