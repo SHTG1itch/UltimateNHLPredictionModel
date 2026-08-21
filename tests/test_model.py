@@ -9,9 +9,11 @@ import numpy as np
 from nhl_predictor.data import (
     FIELDS,
     GOALIE_FIELDS,
+    SKATER_FIELDS,
     TEAM_STAT_FIELDS,
     XG_FIELDS,
     _aggregate_xg,
+    _decode_skaters,
     _parse_schedule,
     read_games,
 )
@@ -191,6 +193,8 @@ def test_enriched_game_csv_is_typed(tmp_path) -> None:
         home_score=3,
         away_score=2,
         xg_available=1,
+        home_skaters="1:1200:1:0:2:4",
+        away_skaters="2:1100:0:1:-1:2",
     )
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=FIELDS)
@@ -201,11 +205,18 @@ def test_enriched_game_csv_is_typed(tmp_path) -> None:
     assert isinstance(parsed["game_id"], int)
     assert isinstance(parsed["xg_available"], int)
     assert all(isinstance(parsed[field], int) for field in GOALIE_FIELDS)
+    assert all(isinstance(parsed[field], tuple) for field in SKATER_FIELDS)
     assert all(isinstance(parsed[field], float) for field in (*TEAM_STAT_FIELDS, *XG_FIELDS))
 
     metadata = _file_metadata(str(path))
     assert metadata["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
     assert metadata["bytes"] == path.stat().st_size
+
+
+def test_skater_lineup_parser_validates_and_types_compact_rows() -> None:
+    assert _decode_skaters("7:1200:1:2:-1:4") == ((7, 1200, 1, 2, -1, 4),)
+    with np.testing.assert_raises_regex(ValueError, "duplicate player"):
+        _decode_skaters("7:1200:1:2:-1:4;7:900:0:0:0:1")
 
 
 def test_shots_are_compacted_to_game_team_expected_goals() -> None:

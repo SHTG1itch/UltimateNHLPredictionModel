@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+from calendar import monthrange
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from io import BytesIO, TextIOWrapper
@@ -25,6 +26,7 @@ TEAM_CODES = (
 API = "https://api-web.nhle.com/v1/club-schedule-season/{team}/{season}"
 STATS_API = "https://api.nhle.com/stats/rest/en/team/{report}"
 GOALIE_STATS_API = "https://api.nhle.com/stats/rest/en/goalie/summary"
+SKATER_STATS_API = "https://api.nhle.com/stats/rest/en/skater/summary"
 SCHEDULE_API = "https://api-web.nhle.com/v1/schedule/{date}"
 MONEYPUCK_XG_API = "https://peter-tanner.com/moneypuck/downloads/shots_{year}.zip"
 # Each report is league-wide and game-grained, avoiding one API request per
@@ -61,11 +63,13 @@ GOALIE_FIELDS = tuple(
     for side in ("home", "away")
     for field in ("goalie_id", "time_on_ice", "goals_against", "shots_against")
 )
+SKATER_FIELDS = ("home_skaters", "away_skaters")
 FIELDS = (
     "game_id", "season", "game_type", "game_date", "start_time_utc",
     "home_team", "away_team", "home_score", "away_score", "overtime",
     *TEAM_STAT_FIELDS,
     *XG_FIELDS,
+    *SKATER_FIELDS,
     *GOALIE_FIELDS,
     "xg_available",
 )
@@ -125,6 +129,75 @@ def _fetch_goalies(season: int, game_type: int, timeout: float) -> list[dict]:
     )
     with urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed HTTPS host
         return json.load(response).get("data", [])
+
+
+def _fetch_skaters(
+    season: int,
+    game_type: int,
+    year: int,
+    month: int,
+    timeout: float,
+) -> list[dict]:
+    """Fetch one month of game-grain skater rows below the API's 10k cap."""
+
+    start = date(year, month, 1)
+    end = date(year, month, monthrange(year, month)[1])
+    query = urlencode(
+        {
+            "isAggregate": "false",
+            "isGame": "true",
+            "start": 0,
+            "limit": -1,
+            "cayenneExp": (
+                f'seasonId={season} and gameTypeId={game_type} '
+                f'and gameDate>="{start}" and gameDate<="{end}"'
+            ),
+        }
+    )
+    request = Request(
+        f"{SKATER_STATS_API}?{query}",
+        headers={"User-Agent": "UltimateNHLPredictionModel/0.4"},
+    )
+    with urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed HTTPS host
+        payload = json.load(response)
+    rows = payload.get("data", [])
+    if payload.get("total", len(rows)) >= 10_000:
+        raise ValueError(f"skater report hit API cap for {year}-{month:02d}")
+    return rows
+
+
+def _encode_skaters(rows: list[dict]) -> str:
+    """Pack one lineup's IDs, usage, and raw effectiveness into one CSV cell."""
+
+    players = []
+    for row in rows:
+        players.append(
+            tuple(
+                int(round(float(row.get(field) or 0)))
+                for field in (
+                    "playerId", "timeOnIcePerGame", "goals", "assists", "plusMinus", "shots"
+                )
+            )
+        )
+    if len({player[0] for player in players}) != len(players):
+        raise ValueError("duplicate player in skater lineup")
+    return ";".join(":".join(map(str, player)) for player in sorted(players))
+
+
+def _decode_skaters(value: str) -> tuple[tuple[int, ...], ...]:
+    """Validate and unpack a compact skater lineup from the CSV boundary."""
+
+    if not value:
+        return ()
+    try:
+        players = tuple(tuple(map(int, player.split(":"))) for player in value.split(";"))
+    except ValueError as error:
+        raise ValueError("invalid skater lineup") from error
+    if any(len(player) != 6 or player[0] <= 0 or player[1] < 0 for player in players):
+        raise ValueError("invalid skater lineup")
+    if len({player[0] for player in players}) != len(players):
+        raise ValueError("duplicate player in skater lineup")
+    return players
 
 
 def _parse_schedule(payload: dict, target_date: str) -> list[dict]:
@@ -278,6 +351,28 @@ def download_seasons(
                     "shots_against": int(record["shotsAgainst"]),
                 }
 
+    skaters: dict[tuple[int, str], list[dict]] = {}
+    months = {
+        (
+            int(game["season"]),
+            int(game["gameType"]),
+            int(game["gameDate"][:4]),
+            int(game["gameDate"][5:7]),
+        )
+        for game in games.values()
+        if game.get("gameType") in {2, 3}
+    }
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [
+            pool.submit(_fetch_skaters, season, game_type, year, month, timeout)
+            for season, game_type, year, month in months
+        ]
+        for future in as_completed(futures):
+            for record in future.result():
+                skaters.setdefault(
+                    (int(record["gameId"]), record["homeRoad"]), []
+                ).append(record)
+
     rows = []
     for game in games.values():
         # Preseason (type 1) is excluded because rosters and incentives differ.
@@ -309,6 +404,10 @@ def download_seasons(
             if starter is None:
                 raise ValueError(f"missing starting goalie for game {row['game_id']} ({side})")
             row.update({f"{side}_starter_{field}": value for field, value in starter.items()})
+            lineup = skaters.get((row["game_id"], orientation), [])
+            if not lineup:
+                raise ValueError(f"missing skater lineup for game {row['game_id']} ({side})")
+            row[f"{side}_skaters"] = _encode_skaters(lineup)
         if (xg_by_side["home"] is None) != (xg_by_side["away"] is None):
             raise ValueError(f"partial MoneyPuck expected goals for game {row['game_id']}")
         row["xg_available"] = int(xg_by_side["home"] is not None)
@@ -344,4 +443,6 @@ def read_games(path: str | Path) -> list[dict]:
             row[field] = int(row[field])
         for field in (*TEAM_STAT_FIELDS, *XG_FIELDS):
             row[field] = float(row[field])
+        for field in SKATER_FIELDS:
+            row[field] = _decode_skaters(row[field])
     return sorted(rows, key=lambda row: (row["start_time_utc"], row["game_id"]))
